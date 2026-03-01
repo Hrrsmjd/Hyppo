@@ -1,0 +1,8 @@
+anthropic
+modal
+wandb
+matplotlib
+numpy
+
+[dev]
+pytest

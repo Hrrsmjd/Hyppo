@@ -1,0 +1,26 @@
+[project]
+name = "hyppo"
+version = "0.1.0"
+description = "Autonomous HPO agent using Claude, Modal, and W&B"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic",
+    "modal",
+    "wandb",
+    "matplotlib",
+    "numpy",
+    "pandas",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools]
+packages = ["tools"]
+py-modules = ["state", "orchestrator", "prompt_builder", "hpo_agent"]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"

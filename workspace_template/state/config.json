@@ -1,0 +1,17 @@
+{
+  "objective": "minimize",
+  "metric": "val_loss",
+  "model_description": "A small CNN for image classification on CIFAR-10 (10 classes, 32x32 RGB images). Baseline has 3 conv layers with max-pooling, batch norm, and dropout, followed by a 256-unit FC layer. Trains for 20 epochs with AdamW and cosine LR schedule.",
+  "training_script": "training/modal_app.py",
+  "available_hyperparameters": [
+    "learning_rate", "batch_size", "num_conv_layers", "num_filters",
+    "dropout", "weight_decay", "warmup_steps",
+    "label_smoothing", "gradient_clip_norm", "lr_schedule",
+    "use_batch_norm"
+  ],
+  "max_concurrent_runs": 4,
+  "max_epochs_per_run": 30,
+  "heartbeat_interval_minutes": 2,
+  "wandb_entity": null,
+  "wandb_project": "hpo-agent"
+}

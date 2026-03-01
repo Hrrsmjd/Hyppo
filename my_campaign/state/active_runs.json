@@ -1,0 +1,86 @@
+[
+  {
+    "run_id": "run_018_aa7a48",
+    "modal_call_id": "fc-01KJGY19EBCW37343ZZJY3V4CW",
+    "params": {
+      "learning_rate": 0.00095,
+      "batch_size": 64,
+      "num_conv_layers": 4,
+      "dropout": 0.035,
+      "weight_decay": 0.00012,
+      "num_filters": 96
+    },
+    "started_at": "2026-02-28T01:33:00.388478+00:00",
+    "epochs_completed": 27,
+    "best_val_loss": 0.349603608915001,
+    "best_epoch": 23,
+    "last_3_val_losses": [
+      0.3579743433814899,
+      0.35725530844395326,
+      0.3552033271949003
+    ],
+    "current_train_loss": 0.14928843289918997,
+    "trend": "slowly_improving"
+  },
+  {
+    "run_id": "run_019_615726",
+    "modal_call_id": "fc-01KJGY30CF2R151RT52ANRYWYS",
+    "params": {
+      "learning_rate": 0.0009,
+      "batch_size": 64,
+      "num_conv_layers": 4,
+      "dropout": 0.04,
+      "weight_decay": 0.00011,
+      "num_filters": 104
+    },
+    "started_at": "2026-02-28T01:33:56.589986+00:00",
+    "epochs_completed": 19,
+    "best_val_loss": 0.366853136260798,
+    "best_epoch": 18,
+    "last_3_val_losses": [
+      0.37745162892113826,
+      0.3746541917418978,
+      0.366853136260798
+    ],
+    "current_train_loss": 0.23168151604820153,
+    "trend": "slowly_improving"
+  },
+  {
+    "run_id": "run_020_0dcec3",
+    "modal_call_id": "fc-01KJGYE6MS3HM6SSKRSCVNE3WQ",
+    "params": {
+      "learning_rate": 0.00092,
+      "batch_size": 64,
+      "num_conv_layers": 4,
+      "dropout": 0.032,
+      "weight_decay": 0.00012,
+      "num_filters": 96
+    },
+    "started_at": "2026-02-28T01:40:03.464231+00:00",
+    "epochs_completed": 0,
+    "best_val_loss": null,
+    "best_epoch": null,
+    "last_3_val_losses": [],
+    "current_train_loss": null,
+    "trend": "insufficient_data"
+  },
+  {
+    "run_id": "run_021_31e678",
+    "modal_call_id": "fc-01KJGYE9D30ADJB9ESQ3GWE19W",
+    "params": {
+      "learning_rate": 0.00088,
+      "batch_size": 64,
+      "num_conv_layers": 4,
+      "dropout": 0.038,
+      "weight_decay": 0.00013,
+      "num_filters": 88
+    },
+    "started_at": "2026-02-28T01:40:06.286216+00:00",
+    "epochs_completed": 0,
+    "best_val_loss": null,
+    "best_epoch": null,
+    "last_3_val_losses": [],
+    "current_train_loss": null,
+    "trend": "insufficient_data"
+  }
+]

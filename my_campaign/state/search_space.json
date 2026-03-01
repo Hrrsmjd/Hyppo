@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "created_at": "2026-02-28T00:50:35.906554+00:00",
+  "last_updated": "2026-02-28T00:50:35.906578+00:00",
+  "parameters": {
+    "learning_rate": {
+      "type": "continuous",
+      "min": 0.0001,
+      "max": 0.1,
+      "scale": "log",
+      "notes": "Most critical parameter for convergence. Log scale covers typical good range for CNNs with AdamW."
+    },
+    "batch_size": {
+      "type": "categorical",
+      "options": [
+        32,
+        64,
+        128,
+        256
+      ],
+      "notes": "Powers of 2 are efficient. 32-256 range covers typical good values for CIFAR-10 on small models."
+    },
+    "num_conv_layers": {
+      "type": "categorical",
+      "options": [
+        2,
+        3,
+        4,
+        5
+      ],
+      "notes": "Architecture parameter. Baseline is 3, exploring 2-5 to find optimal depth for CIFAR-10."
+    },
+    "dropout": {
+      "type": "continuous",
+      "min": 0.0,
+      "max": 0.5,
+      "scale": "linear",
+      "notes": "Regularization parameter. 0-0.5 range covers no dropout to moderate regularization."
+    },
+    "weight_decay": {
+      "type": "continuous",
+      "min": 1e-06,
+      "max": 0.01,
+      "scale": "log",
+      "notes": "L2 regularization for AdamW. Log scale covers typical effective range."
+    },
+    "num_filters": {
+      "type": "categorical",
+      "options": [
+        32,
+        48,
+        64,
+        96,
+        128
+      ],
+      "notes": "Model capacity parameter. Starting with moderate range around likely baseline of 64 filters."
+    }
+  },
+  "changelog": [
+    {
+      "version": 1,
+      "timestamp": "2026-02-28T00:50:35.906584+00:00",
+      "description": "Initial search space: learning_rate, batch_size, num_conv_layers, dropout, weight_decay, num_filters"
+    }
+  ]
+}
