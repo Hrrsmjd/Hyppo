@@ -23,23 +23,29 @@ class MarkdownLogger:
             f"**Input:**\n```json\n{json.dumps(tool_input, indent=2)}\n```\n\n"
             f"**Result:**\n```json\n{json.dumps(result, indent=2)}\n```\n\n---\n"
         )
-        with open(path, "a") as f:
-            f.write(entry)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(entry)
 
-    def log_prompt(self, prompt: str) -> None:
+    def log_prompt(self, prompt: str, title: str = "Heartbeat Prompt") -> None:
         path = self.logs_dir / "llm_log.md"
         entry = (
             f"\n## Heartbeat #{self.heartbeat_num} — {self._timestamp()}\n\n"
-            f"**Prompt length:** {len(prompt)} chars\n\n"
+            f"### {title}\n"
+            f"````text\n{prompt}\n````\n\n"
         )
-        with open(path, "a") as f:
-            f.write(entry)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(entry)
 
-    def log_response(self, text: str, finish_reason: str) -> None:
+    def log_response(
+        self,
+        text: str,
+        finish_reason: str,
+        title: str = "Response",
+    ) -> None:
         path = self.logs_dir / "llm_log.md"
         entry = (
             f"**Finish reason:** {finish_reason}\n\n"
-            f"### Response\n{text}\n\n---\n"
+            f"### {title}\n{text}\n\n---\n"
         )
-        with open(path, "a") as f:
-            f.write(entry)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(entry)

@@ -7,7 +7,11 @@ from dataclasses import dataclass, field
 from unittest.mock import patch
 
 from hyppo.config import save_project_config
-from hyppo.orchestrator import run_heartbeat, update_runs_from_modal_and_wandb
+from hyppo.orchestrator import (
+    backfill_completed_run_metrics,
+    run_heartbeat,
+    update_runs_from_modal_and_wandb,
+)
 from hyppo.prompt_builder import build_prompt, format_state_for_prompt
 from hyppo.state import WorkspaceState
 from hyppo.tools.modal_runner import execute_launch_run
@@ -90,7 +94,8 @@ class HeartbeatTests(unittest.TestCase):
         save_project_config(
             self.temp_dir.name,
             {
-                "model_description": "Test transformer for sentiment analysis.",
+                "llm_description": "Test transformer for sentiment analysis.",
+                "user_description": "Prefer aggressive search around learning rate.",
                 "available_hyperparameters": [
                     "learning_rate",
                     "dropout",
@@ -99,6 +104,9 @@ class HeartbeatTests(unittest.TestCase):
                 "wandb_project": "test-project",
                 "llm_provider": "anthropic",
                 "llm_model": "claude-sonnet-4-20250514",
+                "max_total_runs": 3,
+                "max_concurrent_runs": 2,
+                "max_time": 30,
             },
         )
 
@@ -112,14 +120,22 @@ class HeartbeatTests(unittest.TestCase):
                 {
                     "run_id": f"run_{index + 1:03d}",
                     "best_val_loss": 0.5 - index * 0.01,
+                    "best_time_seconds": 100 + index,
                     "params": {"lr": 0.001},
                     "status": "completed",
+                    "metric_history": [],
                 }
             )
 
         text = format_state_for_prompt(state)
         self.assertIn("Older Completed Runs", text)
         self.assertIn("Recent Completed Runs", text)
+
+    def test_prompt_includes_description_tags(self):
+        state = WorkspaceState.load_or_create(self.temp_dir.name)
+        prompt = build_prompt(state)
+        self.assertIn("<llm_description>", prompt)
+        self.assertIn("<user_description>", prompt)
 
     def test_first_heartbeat_instructions_present(self):
         state = WorkspaceState.load_or_create(self.temp_dir.name)
@@ -184,6 +200,20 @@ class HeartbeatTests(unittest.TestCase):
 
         self.assertIn("error", result)
 
+    def test_launch_run_respects_total_budget(self):
+        state = WorkspaceState.load_or_create(self.temp_dir.name)
+        state.completed_runs.extend(
+            [
+                {"run_id": "run_001", "best_val_loss": 0.4},
+                {"run_id": "run_002", "best_val_loss": 0.3},
+                {"run_id": "run_003", "best_val_loss": 0.2},
+            ]
+        )
+
+        result = execute_launch_run({"learning_rate": 0.001}, state)
+
+        self.assertEqual(result["error"], "Max total runs reached")
+
     def test_launch_run_rejects_non_numeric_continuous_value(self):
         state = WorkspaceState.load_or_create(self.temp_dir.name)
         state.write_search_space(
@@ -228,11 +258,28 @@ class HeartbeatTests(unittest.TestCase):
             patch(
                 "hyppo.orchestrator.fetch_run_metrics",
                 return_value={
-                    "epochs_completed": 10,
+                    "metric_history": [
+                        {
+                            "time_seconds": 60.0,
+                            "progress_percent": 10.0,
+                            "val_loss": 0.37,
+                            "train_loss": 0.29,
+                        },
+                        {
+                            "time_seconds": 120.0,
+                            "progress_percent": 20.0,
+                            "val_loss": 0.35,
+                            "train_loss": 0.28,
+                        },
+                    ],
+                    "history_points": 2,
                     "best_val_loss": 0.35,
-                    "best_epoch": 8,
-                    "last_3_val_losses": [0.37, 0.36, 0.35],
-                    "current_train_loss": 0.28,
+                    "best_time_seconds": 120.0,
+                    "best_progress_percent": 20.0,
+                    "latest_val_loss": 0.35,
+                    "latest_train_loss": 0.28,
+                    "elapsed_time_seconds": 120.0,
+                    "progress_percent": 20.0,
                     "trend": "improving",
                 },
             ),
@@ -243,6 +290,55 @@ class HeartbeatTests(unittest.TestCase):
         self.assertEqual(len(state.completed_runs), 1)
         self.assertEqual(state.completed_runs[0]["best_val_loss"], 0.35)
         self.assertEqual(state.completed_runs[0]["status"], "completed")
+
+    def test_update_runs_completed_keeps_modal_metrics_when_wandb_empty(self):
+        state = WorkspaceState.load_or_create(self.temp_dir.name)
+        state.active_runs.append(
+            {
+                "run_id": "run_001",
+                "modal_call_id": "call_123",
+                "params": {"lr": 0.001},
+                "started_at": "2026-01-01T00:00:00Z",
+            }
+        )
+
+        with (
+            patch(
+                "hyppo.orchestrator.check_modal_run_status",
+                return_value={"status": "completed"},
+            ),
+            patch(
+                "hyppo.orchestrator.get_modal_run_result",
+                return_value={
+                    "best_val_loss": 0.35,
+                    "best_time_seconds": 120.0,
+                    "best_progress_percent": 20.0,
+                    "final_val_loss": 0.37,
+                },
+            ),
+            patch(
+                "hyppo.orchestrator.fetch_run_metrics",
+                return_value={
+                    "metric_history": [],
+                    "history_points": 0,
+                    "best_val_loss": None,
+                    "best_time_seconds": None,
+                    "best_progress_percent": None,
+                    "latest_val_loss": None,
+                    "latest_train_loss": None,
+                    "elapsed_time_seconds": None,
+                    "progress_percent": None,
+                    "trend": "insufficient_data",
+                },
+            ),
+        ):
+            update_runs_from_modal_and_wandb(state)
+
+        completed = state.completed_runs[0]
+        self.assertEqual(completed["best_val_loss"], 0.35)
+        self.assertEqual(completed["latest_val_loss"], 0.37)
+        self.assertEqual(completed["history_points"], 1)
+        self.assertEqual(completed["metric_history"][0]["val_loss"], 0.37)
 
     def test_update_runs_keeps_unknown_modal_status_active(self):
         state = WorkspaceState.load_or_create(self.temp_dir.name)
@@ -263,11 +359,22 @@ class HeartbeatTests(unittest.TestCase):
             patch(
                 "hyppo.orchestrator.fetch_run_metrics",
                 return_value={
-                    "epochs_completed": 3,
+                    "metric_history": [
+                        {
+                            "time_seconds": 180.0,
+                            "progress_percent": 30.0,
+                            "val_loss": 0.41,
+                            "train_loss": 0.35,
+                        }
+                    ],
+                    "history_points": 1,
                     "best_val_loss": 0.41,
-                    "best_epoch": 2,
-                    "last_3_val_losses": [0.48, 0.44, 0.41],
-                    "current_train_loss": 0.35,
+                    "best_time_seconds": 180.0,
+                    "best_progress_percent": 30.0,
+                    "latest_val_loss": 0.41,
+                    "latest_train_loss": 0.35,
+                    "elapsed_time_seconds": 180.0,
+                    "progress_percent": 30.0,
                     "trend": "improving",
                 },
             ),
@@ -278,8 +385,58 @@ class HeartbeatTests(unittest.TestCase):
         self.assertEqual(len(state.completed_runs), 0)
         self.assertEqual(state.active_runs[0]["last_error"]["source"], "modal_status")
 
+    def test_backfill_completed_run_metrics(self):
+        state = WorkspaceState.load_or_create(self.temp_dir.name)
+        state.completed_runs.append(
+            {
+                "run_id": "run_001",
+                "status": "completed",
+                "metric_history": [],
+                "history_points": 0,
+                "best_val_loss": None,
+                "latest_val_loss": None,
+            }
+        )
+
+        with patch(
+            "hyppo.orchestrator.fetch_run_metrics",
+            return_value={
+                "metric_history": [
+                    {
+                        "time_seconds": 30.0,
+                        "progress_percent": 5.0,
+                        "val_loss": 0.5,
+                        "train_loss": 0.6,
+                    }
+                ],
+                "history_points": 1,
+                "best_val_loss": 0.5,
+                "best_time_seconds": 30.0,
+                "best_progress_percent": 5.0,
+                "latest_val_loss": 0.5,
+                "latest_train_loss": 0.6,
+                "elapsed_time_seconds": 30.0,
+                "progress_percent": 5.0,
+                "trend": "insufficient_data",
+            },
+        ):
+            backfill_completed_run_metrics(state)
+
+        completed = state.completed_runs[0]
+        self.assertEqual(completed["history_points"], 1)
+        self.assertEqual(completed["best_val_loss"], 0.5)
+
     def test_wandb_history_normalization(self):
         from hyppo.tools.wandb_reader import _normalize_history
 
-        rows = [{"epoch": 0, "val_loss": 0.5}, {"epoch": 1, "val_loss": 0.4}]
+        rows = [{"_runtime": 0, "val_loss": 0.5}, {"_runtime": 30, "val_loss": 0.4}]
         self.assertEqual(_normalize_history(rows), rows)
+
+    def test_wandb_reader_prefers_scan_history(self):
+        from hyppo.tools.wandb_reader import _read_run_history
+
+        class FakeRun:
+            def scan_history(self):
+                return [{"val_loss": 0.5}]
+
+        self.assertEqual(_read_run_history(FakeRun()), [{"val_loss": 0.5}])

@@ -1,7 +1,6 @@
 import json
 import time
 
-from hyppo.config import load_project_config
 from hyppo.llm_client import LLMClient
 from hyppo.logger import MarkdownLogger
 from hyppo.prompt_builder import build_prompt
@@ -16,7 +15,80 @@ from hyppo.tools.search_space import (
     execute_initialize_search_space,
     execute_update_search_space,
 )
-from hyppo.tools.wandb_reader import fetch_run_metrics
+from hyppo.tools.wandb_reader import empty_metrics, fetch_run_metrics, has_metric_signal
+
+
+def _hydrate_metrics(run: dict, metrics: dict) -> None:
+    if has_metric_signal(metrics):
+        run.update(metrics)
+        return
+
+    if run.get("final_val_loss") is not None:
+        fallback_point = {
+            "time_seconds": run.get("best_time_seconds") or run.get("elapsed_time_seconds"),
+            "progress_percent": run.get("best_progress_percent") or run.get("progress_percent"),
+            "val_loss": run.get("final_val_loss"),
+            "train_loss": run.get("latest_train_loss"),
+        }
+        run.update(
+            {
+                "metric_history": [fallback_point],
+                "history_points": 1,
+                "best_val_loss": run.get("best_val_loss") or run.get("final_val_loss"),
+                "best_time_seconds": run.get("best_time_seconds"),
+                "best_progress_percent": run.get("best_progress_percent"),
+                "latest_val_loss": run.get("latest_val_loss") or run.get("final_val_loss"),
+                "latest_train_loss": run.get("latest_train_loss"),
+                "elapsed_time_seconds": run.get("elapsed_time_seconds"),
+                "progress_percent": run.get("progress_percent") or run.get("best_progress_percent"),
+                "trend": run.get("trend", "insufficient_data"),
+            }
+        )
+        return
+
+    for key, value in empty_metrics().items():
+        run.setdefault(key, value)
+
+
+def _safe_fetch_run_metrics(state: WorkspaceState, run: dict, source: str) -> None:
+    try:
+        metrics = fetch_run_metrics(
+            state.wandb_run_path(run["run_id"]),
+            max_time=state.config.get("max_time"),
+        )
+        _hydrate_metrics(run, metrics)
+    except Exception as exc:
+        run["last_error"] = {
+            "source": source,
+            "message": str(exc),
+            "timestamp": now_iso(),
+        }
+        print(f"Warning: could not fetch metrics for {run['run_id']}: {exc}")
+
+
+def _needs_metric_backfill(run: dict) -> bool:
+    return not has_metric_signal(
+        {
+            "metric_history": run.get("metric_history"),
+            "best_val_loss": run.get("best_val_loss"),
+            "latest_val_loss": run.get("latest_val_loss"),
+            "latest_train_loss": run.get("latest_train_loss"),
+            "elapsed_time_seconds": run.get("elapsed_time_seconds"),
+            "progress_percent": run.get("progress_percent"),
+        }
+    )
+
+
+def backfill_completed_run_metrics(state: WorkspaceState) -> None:
+    updated = False
+    for run in state.completed_runs:
+        if not _needs_metric_backfill(run):
+            continue
+        _safe_fetch_run_metrics(state, run, "wandb_backfill_metrics")
+        updated = True
+
+    if updated:
+        state.save()
 
 
 def update_runs_from_modal_and_wandb(state: WorkspaceState) -> None:
@@ -41,15 +113,8 @@ def update_runs_from_modal_and_wandb(state: WorkspaceState) -> None:
                     "timestamp": now_iso(),
                 }
                 print(f"Warning: could not get result for {run['run_id']}: {exc}")
-            try:
-                run.update(fetch_run_metrics(state.wandb_run_path(run["run_id"])))
-            except Exception as exc:
-                run["last_error"] = {
-                    "source": "wandb_final_metrics",
-                    "message": str(exc),
-                    "timestamp": now_iso(),
-                }
-                print(f"Warning: could not fetch final metrics for {run['run_id']}: {exc}")
+
+            _safe_fetch_run_metrics(state, run, "wandb_final_metrics")
             run["status"] = "completed"
             run["finished_at"] = now_iso()
             state.completed_runs.append(run)
@@ -70,14 +135,7 @@ def update_runs_from_modal_and_wandb(state: WorkspaceState) -> None:
                     "message": status_info["error"],
                     "timestamp": now_iso(),
                 }
-            try:
-                run.update(fetch_run_metrics(state.wandb_run_path(run["run_id"])))
-            except Exception as exc:
-                run["last_error"] = {
-                    "source": "wandb_metrics",
-                    "message": str(exc),
-                    "timestamp": now_iso(),
-                }
+            _safe_fetch_run_metrics(state, run, "wandb_metrics")
             still_active.append(run)
 
     state.replace_active_runs(still_active)
@@ -98,7 +156,6 @@ def execute_tool_call(tool_name: str, tool_input: dict, state: WorkspaceState) -
 
 
 def _extract_text(response) -> str:
-    """Extract text content from an OpenAI chat completion response."""
     msg = response.choices[0].message
     return msg.content or ""
 
@@ -116,7 +173,6 @@ def execute_tool_calls(
     while current_response.choices[0].finish_reason == "tool_calls":
         msg = current_response.choices[0].message
 
-        # Build assistant message for conversation history
         assistant_msg = {"role": "assistant"}
         if msg.content:
             assistant_msg["content"] = msg.content
@@ -131,7 +187,6 @@ def execute_tool_calls(
             ]
         messages.append(assistant_msg)
 
-        # Execute each tool call and build tool result messages
         for tc in msg.tool_calls:
             try:
                 tool_input = json.loads(tc.function.arguments)
@@ -143,18 +198,18 @@ def execute_tool_calls(
             print(f"  Tool: {tc.function.name} -> {json.dumps(result)}")
             if logger:
                 logger.log_tool(tc.function.name, tool_input, result)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": json.dumps(result),
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result),
+                }
+            )
 
-        # Continue conversation
         current_response = client.chat(messages=messages, tools=TOOL_DEFINITIONS)
         if logger:
             logger.log_response(_extract_text(current_response), current_response.choices[0].finish_reason)
 
-    # Print any final text
     final_text = _extract_text(current_response).strip()
     if final_text:
         print(f"  LLM: {final_text}")
@@ -167,6 +222,9 @@ def run_heartbeat(
 ) -> bool:
     print(f"\n{'=' * 60}")
     print("Heartbeat starting...")
+
+    state.reload_config()
+    backfill_completed_run_metrics(state)
 
     if state.active_runs:
         print("Polling Modal and W&B for run updates...")
@@ -192,14 +250,19 @@ def run_heartbeat(
 
     execute_tool_calls(response, state, client=client, logger=logger, original_prompt=prompt)
     state.save()
+
+    should_continue = not (state.max_total_runs_reached() and not state.active_runs)
+    if not should_continue:
+        print("Run budget exhausted and no active runs remain.")
+
     print("Heartbeat complete.")
-    return True
+    return should_continue
 
 
 def main(project_dir: str) -> None:
     state = WorkspaceState.load_or_create(project_dir)
 
-    config = load_project_config(project_dir)
+    config = state.config
     client = LLMClient(config["llm_provider"], config["llm_model"])
     logger = MarkdownLogger(state.logs_dir)
     interval = config.get("heartbeat_interval_minutes", 5) * 60

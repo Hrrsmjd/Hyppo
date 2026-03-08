@@ -7,6 +7,7 @@ Trains fast (~2-3 min on a T4/A10G).
 import modal
 
 app = modal.App("hpo-agent")
+RUN_TIMEOUT_MINUTES = 20
 
 image = modal.Image.debian_slim(python_version="3.11").pip_install(
     "torch",
@@ -20,7 +21,7 @@ image = modal.Image.debian_slim(python_version="3.11").pip_install(
     image=image,
     secrets=[modal.Secret.from_name("wandb-secret")],
     gpu="T4",
-    timeout=1800,
+    timeout=RUN_TIMEOUT_MINUTES * 60,
 )
 def train_model(
     learning_rate: float = 1e-3,
@@ -34,12 +35,12 @@ def train_model(
     gradient_clip_norm: float = 1.0,
     lr_schedule: str = "cosine",
     use_batch_norm: bool = True,
-    max_epochs: int = 20,
     wandb_project: str = "hpo-agent",
     wandb_entity: str | None = None,
     run_name: str | None = None,
 ) -> dict:
     import numpy as np
+    import time
     import torch
     import torch.nn as nn
     import torchvision
@@ -66,7 +67,7 @@ def train_model(
             "gradient_clip_norm": gradient_clip_norm,
             "lr_schedule": lr_schedule,
             "use_batch_norm": use_batch_norm,
-            "max_epochs": max_epochs,
+            "max_time_minutes": RUN_TIMEOUT_MINUTES,
         },
     )
     run_id = run.id
@@ -146,7 +147,8 @@ def train_model(
         model.parameters(), lr=learning_rate, weight_decay=weight_decay
     )
 
-    total_steps = len(train_loader) * max_epochs
+    estimated_epochs = max(1, RUN_TIMEOUT_MINUTES)
+    total_steps = len(train_loader) * estimated_epochs
     if lr_schedule == "cosine":
         main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, total_steps
@@ -167,9 +169,13 @@ def train_model(
 
     # --- Training loop ---
     best_val_loss = float("inf")
-    best_epoch = 0
+    best_time_seconds = 0.0
+    best_progress_percent = 0.0
+    start_time = time.monotonic()
+    max_time_seconds = RUN_TIMEOUT_MINUTES * 60
+    epoch = 0
 
-    for epoch in range(max_epochs):
+    while True:
         model.train()
         train_losses = []
 
@@ -209,31 +215,42 @@ def train_model(
         avg_val_loss = np.mean(val_losses)
         accuracy = correct / total if total > 0 else 0
 
+        elapsed_time_seconds = time.monotonic() - start_time
+        progress_percent = min((elapsed_time_seconds / max_time_seconds) * 100, 100.0)
+
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            best_epoch = epoch
+            best_time_seconds = elapsed_time_seconds
+            best_progress_percent = progress_percent
 
         wandb.log(
             {
-                "epoch": epoch,
                 "train_loss": avg_train_loss,
                 "val_loss": avg_val_loss,
                 "accuracy": accuracy,
                 "learning_rate": optimizer.param_groups[0]["lr"],
+                "elapsed_time_seconds": elapsed_time_seconds,
+                "progress_percent": progress_percent,
             }
         )
 
         print(
             f"Epoch {epoch}: train_loss={avg_train_loss:.4f}, "
-            f"val_loss={avg_val_loss:.4f}, acc={accuracy:.4f}"
+            f"val_loss={avg_val_loss:.4f}, acc={accuracy:.4f}, "
+            f"time={elapsed_time_seconds:.1f}s, progress={progress_percent:.1f}%"
         )
+
+        epoch += 1
+        if elapsed_time_seconds >= max_time_seconds:
+            break
 
     wandb.finish()
 
     return {
         "run_id": run_id,
         "best_val_loss": float(best_val_loss),
-        "best_epoch": best_epoch,
+        "best_time_seconds": float(best_time_seconds),
+        "best_progress_percent": float(best_progress_percent),
         "final_val_loss": float(avg_val_loss),
         "final_accuracy": float(accuracy),
     }

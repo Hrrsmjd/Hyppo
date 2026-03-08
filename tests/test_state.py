@@ -11,9 +11,10 @@ class WorkspaceStateTests(unittest.TestCase):
         save_project_config(
             self.temp_dir.name,
             {
-                "model_description": "Test model",
+                "llm_description": "Test model",
                 "available_hyperparameters": ["learning_rate", "dropout"],
                 "wandb_project": "test-project",
+                "max_total_runs": 5,
             },
         )
 
@@ -24,7 +25,7 @@ class WorkspaceStateTests(unittest.TestCase):
         state = WorkspaceState.load_or_create(self.temp_dir.name)
         self.assertEqual(state.active_runs, [])
         self.assertEqual(state.completed_runs, [])
-        self.assertEqual(state.config["model_description"], "Test model")
+        self.assertEqual(state.config["llm_description"], "Test model")
 
     def test_search_space_lifecycle(self):
         state = WorkspaceState.load_or_create(self.temp_dir.name)
@@ -68,5 +69,16 @@ class WorkspaceStateTests(unittest.TestCase):
 
         self.assertEqual(snapshot["active_runs"], 0)
         self.assertEqual(snapshot["completed_runs"], 1)
+        self.assertEqual(snapshot["total_runs_started"], 1)
+        self.assertEqual(snapshot["runs_remaining"], 4)
         self.assertEqual(snapshot["best_val_loss"], 0.4)
         self.assertIsNone(snapshot["search_space_version"])
+
+    def test_strategy_history_is_preserved(self):
+        state = WorkspaceState.load_or_create(self.temp_dir.name)
+        state.write_strategy("First insight")
+        state.write_strategy("Second insight")
+
+        self.assertEqual(state.strategy, "Second insight")
+        self.assertIn("First insight", state.insights_history)
+        self.assertIn("Second insight", state.insights_history)

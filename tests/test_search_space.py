@@ -15,7 +15,7 @@ class SearchSpaceTests(unittest.TestCase):
         save_project_config(
             self.temp_dir.name,
             {
-                "model_description": "Test model",
+                "llm_description": "Test model",
                 "available_hyperparameters": [
                     "learning_rate",
                     "dropout",

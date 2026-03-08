@@ -7,12 +7,11 @@ def compute_trend(losses: list[float]) -> str:
 
     if avg_diff < -0.01:
         return "improving"
-    elif avg_diff < -0.001:
+    if avg_diff < -0.001:
         return "slowly_improving"
-    elif avg_diff > 0.01:
+    if avg_diff > 0.01:
         return "diverging"
-    else:
-        return "plateaued"
+    return "plateaued"
 
 
 def _normalize_history(history) -> list[dict]:
@@ -24,50 +23,139 @@ def _normalize_history(history) -> list[dict]:
         return list(history)
 
 
-def _extract_column(rows: list[dict], key: str) -> list:
-    return [r[key] for r in rows if r.get(key) is not None]
+def _coerce_float(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
-def fetch_run_metrics(wandb_run_path: str) -> dict:
+def _read_run_history(run) -> list[dict]:
+    scan_history = getattr(run, "scan_history", None)
+    if callable(scan_history):
+        return list(scan_history())
+
+    return _normalize_history(run.history())
+
+
+def _derive_time_seconds(rows: list[dict]) -> list[float | None]:
+    explicit_elapsed = [_coerce_float(row.get("elapsed_time_seconds")) for row in rows]
+    if any(value is not None for value in explicit_elapsed):
+        return explicit_elapsed
+
+    runtimes = [_coerce_float(row.get("_runtime")) for row in rows]
+    if any(runtime is not None for runtime in runtimes):
+        return runtimes
+
+    timestamps = [_coerce_float(row.get("_timestamp")) for row in rows]
+    valid_timestamps = [timestamp for timestamp in timestamps if timestamp is not None]
+    if valid_timestamps:
+        start = valid_timestamps[0]
+        return [
+            timestamp - start if timestamp is not None else None
+            for timestamp in timestamps
+        ]
+
+    epochs = [_coerce_float(row.get("epoch")) for row in rows]
+    if any(epoch is not None for epoch in epochs):
+        return epochs
+
+    return [None for _ in rows]
+
+
+def _derive_progress_percent(row: dict, max_time_seconds: float | None, time_seconds) -> float | None:
+    for key in ("progress_percent", "progress_pct", "percent", "percentage"):
+        value = _coerce_float(row.get(key))
+        if value is not None:
+            return max(0.0, min(value, 100.0))
+
+    progress = _coerce_float(row.get("progress"))
+    if progress is not None:
+        if progress <= 1.0:
+            return max(0.0, min(progress * 100.0, 100.0))
+        return max(0.0, min(progress, 100.0))
+
+    if max_time_seconds and time_seconds is not None:
+        return max(0.0, min((time_seconds / max_time_seconds) * 100.0, 100.0))
+
+    return None
+
+
+def empty_metrics() -> dict:
+    return {
+        "metric_history": [],
+        "history_points": 0,
+        "best_val_loss": None,
+        "best_time_seconds": None,
+        "best_progress_percent": None,
+        "latest_val_loss": None,
+        "latest_train_loss": None,
+        "elapsed_time_seconds": None,
+        "progress_percent": None,
+        "trend": "insufficient_data",
+    }
+
+
+def has_metric_signal(metrics: dict) -> bool:
+    return bool(
+        metrics.get("metric_history")
+        or metrics.get("best_val_loss") is not None
+        or metrics.get("latest_val_loss") is not None
+        or metrics.get("latest_train_loss") is not None
+        or metrics.get("elapsed_time_seconds") is not None
+        or metrics.get("progress_percent") is not None
+    )
+
+
+def fetch_run_metrics(wandb_run_path: str, max_time: int | None = None) -> dict:
     import wandb
 
     api = wandb.Api()
     run = api.run(wandb_run_path)
-    raw_history = run.history(keys=["val_loss", "train_loss", "epoch"])
-    rows = _normalize_history(raw_history)
+    rows = _read_run_history(run)
+    max_time_seconds = float(max_time) * 60 if max_time else None
 
     if not rows:
-        return {
-            "epochs_completed": 0,
-            "best_val_loss": None,
-            "best_epoch": None,
-            "last_3_val_losses": [],
-            "current_train_loss": None,
-            "trend": "insufficient_data",
-        }
+        return empty_metrics()
 
-    valid = [r for r in rows if r.get("val_loss") is not None]
-    val_losses = [r["val_loss"] for r in valid]
-    epochs = [r["epoch"] for r in valid]
+    time_seconds = _derive_time_seconds(rows)
+    history = []
+    for row, time_value in zip(rows, time_seconds):
+        val_loss = _coerce_float(row.get("val_loss"))
+        train_loss = _coerce_float(row.get("train_loss"))
+        progress_percent = _derive_progress_percent(row, max_time_seconds, time_value)
 
-    train_losses = [r["train_loss"] for r in valid if r.get("train_loss") is not None]
-    if not train_losses:
-        train_losses = _extract_column(rows, "train_loss")
+        if val_loss is None and train_loss is None:
+            continue
 
-    all_epochs = _extract_column(rows, "epoch")
-    epochs_completed = len(all_epochs)
+        history.append(
+            {
+                "time_seconds": time_value,
+                "progress_percent": progress_percent,
+                "val_loss": val_loss,
+                "train_loss": train_loss,
+            }
+        )
 
-    best_val_loss = min(val_losses) if val_losses else None
-    best_idx = val_losses.index(best_val_loss) if best_val_loss is not None else None
-    best_epoch = int(epochs[best_idx]) if best_idx is not None else None
+    if not history:
+        return empty_metrics()
 
-    last_3 = val_losses[-3:] if len(val_losses) >= 3 else val_losses
+    val_points = [point for point in history if point["val_loss"] is not None]
+    val_losses = [point["val_loss"] for point in val_points]
+    best_point = min(val_points, key=lambda point: point["val_loss"]) if val_points else None
+    latest_point = history[-1]
 
     return {
-        "epochs_completed": epochs_completed,
-        "best_val_loss": best_val_loss,
-        "best_epoch": best_epoch,
-        "last_3_val_losses": last_3,
-        "current_train_loss": train_losses[-1] if train_losses else None,
-        "trend": compute_trend(last_3),
+        "metric_history": history,
+        "history_points": len(history),
+        "best_val_loss": best_point["val_loss"] if best_point else None,
+        "best_time_seconds": best_point["time_seconds"] if best_point else None,
+        "best_progress_percent": best_point["progress_percent"] if best_point else None,
+        "latest_val_loss": latest_point["val_loss"],
+        "latest_train_loss": latest_point["train_loss"],
+        "elapsed_time_seconds": latest_point["time_seconds"],
+        "progress_percent": latest_point["progress_percent"],
+        "trend": compute_trend(val_losses),
     }

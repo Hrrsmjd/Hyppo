@@ -15,7 +15,6 @@ def launch_modal_run(run_name: str, params: dict, config: dict) -> dict:
         wandb_project=config["wandb_project"],
         wandb_entity=config.get("wandb_entity"),
         run_name=run_name,
-        max_epochs=config.get("max_epochs_per_run", 50),
     )
     return {"modal_call_id": call.object_id, "status": "running"}
 
@@ -82,6 +81,12 @@ def execute_launch_run(params: dict, state: WorkspaceState) -> dict:
     if len(state.active_runs) >= state.config.get("max_concurrent_runs", 4):
         return {"error": "Max concurrent runs reached", "active": len(state.active_runs)}
 
+    if state.max_total_runs_reached():
+        return {
+            "error": "Max total runs reached",
+            "total_runs_started": state.total_runs_started(),
+        }
+
     space = state.read_search_space()
     if space:
         space_params = space["parameters"]
@@ -106,11 +111,15 @@ def execute_launch_run(params: dict, state: WorkspaceState) -> dict:
             "params": params,
             "status": "running",
             "started_at": now_iso(),
-            "epochs_completed": 0,
+            "metric_history": [],
+            "history_points": 0,
             "best_val_loss": None,
-            "best_epoch": None,
-            "last_3_val_losses": [],
-            "current_train_loss": None,
+            "best_time_seconds": None,
+            "best_progress_percent": None,
+            "latest_val_loss": None,
+            "latest_train_loss": None,
+            "elapsed_time_seconds": None,
+            "progress_percent": None,
             "trend": "insufficient_data",
         }
     )

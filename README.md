@@ -1,25 +1,21 @@
 # Hyppo
 
-Autonomous hyperparameter optimization for Modal jobs tracked in Weights & Biases. Hyppo keeps campaign state on disk, asks an LLM what to do each heartbeat, launches runs on Modal, and refines the search space from observed metrics.
+Hyppo is an autonomous hyperparameter optimization CLI for training jobs that run on Modal and log metrics to Weights & Biases.
+
+Point Hyppo at a training codebase, tell it which hyperparameters it is allowed to tune, and let an LLM run the optimization loop. Hyppo keeps all campaign state on disk, launches runs on Modal, reads metrics from W&B, and iteratively updates strategy and search space over time.
 
 ## Install
 
-From source:
+From a local checkout:
 
 ```bash
 pipx install .
 ```
 
-Directly from GitHub:
+From GitHub:
 
 ```bash
 pipx install 'git+https://github.com/Hrrsmjd/Hyppo.git'
-```
-
-After you publish to PyPI:
-
-```bash
-pipx install hyppo
 ```
 
 For development:
@@ -28,103 +24,194 @@ For development:
 pip install -e ".[dev]"
 ```
 
-## Prerequisites
+After publishing to PyPI:
 
-- A training function deployed on **Modal** (see `hyppo/training/modal_app.py`)
-- A **Weights & Biases** project for metric tracking
-- A W&B API key available both locally and inside Modal
-- An API key for at least one LLM provider (`anthropic`, `openai`, or `openrouter`)
+```bash
+pipx install hyppo
+```
 
-If you use the example Modal app, copy or adapt `hyppo/training/modal_app.py`,
-then create the secret and deploy your app first:
+## What Hyppo does
+
+1. Reads your project and generates an LLM-facing description automatically.
+2. Lets you declare the hyperparameters that are allowed to be tuned.
+3. Asks the LLM to initialize a search space.
+4. Launches runs on Modal.
+5. Reads metrics from W&B each heartbeat.
+6. Refines the search strategy until you stop the campaign or the run budget is exhausted.
+
+## Requirements
+
+- A training function deployed on **Modal**
+- That function must accept the tuned hyperparameters plus:
+  - `wandb_project`
+  - `wandb_entity`
+  - `run_name`
+- A **Weights & Biases** project for tracking metrics
+- A W&B API key available locally and inside Modal
+- An API key for at least one supported LLM provider:
+  - Anthropic
+  - OpenAI
+  - OpenRouter
+
+If you use the example Modal app in `hyppo/training/modal_app.py`, create the W&B secret and deploy it first:
 
 ```bash
 modal secret create wandb-secret WANDB_API_KEY=...
 modal deploy path/to/your/modal_app.py
 ```
 
-## Quick start
+## Quick Start
+
+Launch the CLI:
 
 ```bash
 hyppo
 ```
 
-Then configure and launch:
+Then configure a campaign:
 
-```
-/project ./my_training
-/describe ResNet-style classifier for CIFAR-10 with AdamW
+```text
+/project ./my_training_project
+/script train.py
 /params learning_rate,dropout,batch_size,weight_decay
 /provider anthropic
 /model claude-sonnet-4-20250514
 /apikey sk-...
 /wandb myteam/hpo-runs
-/modal hpo-agent train_model
+/modal my-modal-app train_model
 /heartbeat 5
-/max_runs 2
+/max_total_runs 100
+/max_concurrent_runs 4
+/max_time 30
 /optimize
 ```
 
-Use `/script path/to/train.py` if you want to store a reference to the
-source file in `hyppo.json`; actual execution targets the deployed Modal
-app and function configured with `/modal`.
+### What those commands mean
 
-Hyppo will:
-1. Ask the LLM to define an initial search space based on your model description
-2. Launch training runs on Modal with different hyperparameter configurations
-3. Poll W&B for metrics each heartbeat
-4. Refine the search space based on results
-5. Repeat until you `/stop`
+- `/project` points to the whole training codebase, not just a single script.
+- `/script` points to the training script inside that project.
+- `/params` is the explicit allowlist of hyperparameters the model is supposed to use.
+- `/describe` appends your own notes on top of the generated project description.
+- `/max_total_runs` is the total campaign budget.
+- `/max_concurrent_runs` is the parallelism cap.
+- `/max_time` is Hyppo's per-run time budget for reasoning and progress normalization.
 
-## How it works
+Important:
+- `/max_time` does not automatically change your Modal function timeout.
+- The actual hard runtime limit still needs to be configured on your deployed `@app.function(timeout=...)`.
 
-Each heartbeat, Hyppo sends the current campaign state to the configured
-LLM. The model can initialize or update the search space, launch new
-runs, and write strategy notes. All campaign state lives on disk, so a
-restart can resume from `hyppo.json` and `.hyppo/state/`.
+## How It Works
 
-## Files Hyppo creates
+Every heartbeat is a fresh single-turn LLM call. Hyppo does not rely on chat history. Instead, it rebuilds the full campaign state from disk each time.
 
+That state includes:
+
+- config
+- generated and user-supplied project description
+- current search space
+- active runs
+- recent completed runs
+- strategy notes
+- historical insights
+
+The LLM can:
+
+- initialize the search space
+- update the search space
+- launch new runs
+- write strategy notes
+
+## Project Description Generation
+
+When you set `/project`, Hyppo scans the project directory, reads relevant text files, and sends that context to the configured model to generate `llm_description`.
+
+You can then add extra context with:
+
+```text
+/describe Use augmentation-heavy settings if validation loss plateaus early
 ```
+
+Hyppo stores those two pieces separately:
+
+- `llm_description`
+- `user_description`
+
+## Campaign State on Disk
+
+Hyppo writes campaign state inside your project under `.hyppo/`.
+
+```text
 ~/.hyppo/
-└── credentials.json          # API keys (never in project dir)
+└── credentials.json
 
 your-project/
-├── hyppo.json                # Campaign config (safe to commit)
-└── .hyppo/                   # Working directory (gitignored)
-    ├── skills/               # Skill files guiding the LLM
+└── .hyppo/
+    ├── hyppo.json
+    ├── skills/
     ├── state/
     │   ├── active_runs.json
     │   ├── completed_runs.json
     │   ├── search_space.json
-    │   └── strategy.md
+    │   ├── strategy.md
+    │   └── all_insights.md
     └── logs/
-        ├── tool_log.md       # Every tool call + result
-        └── llm_log.md        # Every LLM prompt + response
+        ├── tool_log.md
+        └── llm_log.md
 ```
 
-## CLI commands
+## Metrics and Logging
+
+Hyppo tracks run metrics as structured history instead of only keeping the latest values.
+
+State includes:
+
+- full `metric_history`
+- best validation loss
+- latest validation loss
+- latest training loss
+- elapsed time
+- progress percentage
+
+Logs include:
+
+- `tool_log.md`: every tool call and result
+- `llm_log.md`: full prompts and model responses
+
+Note:
+- full prompt logging is useful for debugging
+- it can also make logs large, especially for bigger projects
+
+## CLI Commands
 
 | Command | Purpose |
 | --- | --- |
-| `/project <path>` | Set the project directory where `hyppo.json` and `.hyppo/` live |
-| `/script <path>` | Store a reference training script path in config |
-| `/modal <app> <function>` | Choose the deployed Modal app and function to invoke |
-| `/describe <text>` | Describe the model/task for the LLM |
-| `/params <list>` | Declare candidate hyperparameters |
+| `/project <path>` | Set the project directory and generate or refresh the LLM description |
+| `/script <path>` | Set the training script path inside the project |
+| `/describe <text>` | Append user notes to the generated description |
+| `/params <list>` | Declare the hyperparameters the model is allowed to tune |
+| `/provider <name>` | Set the LLM provider |
+| `/model <name>` | Set the LLM model |
+| `/apikey <key>` | Save the API key for the current provider |
 | `/wandb <entity/project>` | Set the W&B target |
-| `/status` | Show active/completed runs and the current best metric |
-| `/optimize` | Start the campaign loop |
+| `/modal <app> <function>` | Set the deployed Modal app and function |
+| `/heartbeat <mins>` | Set the heartbeat interval |
+| `/max_total_runs <n>` | Set the total run budget |
+| `/max_concurrent_runs <n>` | Set the concurrent run cap |
+| `/max_time <minutes>` | Set Hyppo's per-run time budget |
+| `/config` | Show the current config |
+| `/status` | Show campaign status |
+| `/optimize` | Start the campaign |
+| `/stop` | Stop the campaign after the current heartbeat |
 
-## Supported LLM providers
+## Supported LLM Providers
 
-| Provider | Env var | Base URL |
-|----------|---------|----------|
+| Provider | Environment Variable | Base URL |
+| --- | --- | --- |
 | Anthropic | `ANTHROPIC_API_KEY` | `https://api.anthropic.com/v1/` |
 | OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1` |
 | OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` |
 
-Set keys via `/apikey` or environment variables. All providers are accessed through the OpenAI SDK.
+You can set keys with `/apikey` or environment variables. All providers are accessed through the OpenAI SDK.
 
 ## Publishing
 
@@ -136,4 +223,4 @@ python -m twine check dist/*
 python -m twine upload dist/*
 ```
 
-The package metadata and console entry point are defined in `pyproject.toml`.
+Package metadata and the `hyppo` console entry point are defined in `pyproject.toml`.

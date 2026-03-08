@@ -4,9 +4,9 @@ from pathlib import Path
 
 from hyppo.config import (
     ensure_project_layout,
+    existing_project_config_path,
     hyppo_dir,
     logs_dir,
-    project_config_path,
     skills_dir,
     state_dir,
 )
@@ -23,7 +23,7 @@ class WorkspaceState:
         self.state_dir = state_dir(self.project_dir)
         self.skills_dir = skills_dir(self.project_dir)
         self.logs_dir = logs_dir(self.project_dir)
-        self.config_path = project_config_path(self.project_dir)
+        self.config_path = existing_project_config_path(self.project_dir)
 
         self._active_runs: list[dict] | None = None
         self._completed_runs: list[dict] | None = None
@@ -55,8 +55,13 @@ class WorkspaceState:
     @property
     def config(self) -> dict:
         if self._config is None:
+            self.config_path = existing_project_config_path(self.project_dir)
             self._config = json.loads(self.config_path.read_text(encoding="utf-8"))
         return self._config
+
+    def reload_config(self) -> dict:
+        self._config = None
+        return self.config
 
     def search_space_exists(self) -> bool:
         return (self.state_dir / "search_space.json").exists()
@@ -101,8 +106,35 @@ class WorkspaceState:
             return ""
         return path.read_text(encoding="utf-8")
 
+    @property
+    def insights_history(self) -> str:
+        path = self.state_dir / "all_insights.md"
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8")
+
     def write_strategy(self, content: str) -> None:
-        (self.state_dir / "strategy.md").write_text(content, encoding="utf-8")
+        path = self.state_dir / "strategy.md"
+        previous = path.read_text(encoding="utf-8") if path.exists() else ""
+        path.write_text(content, encoding="utf-8")
+
+        if content.strip() and content != previous:
+            with open(self.state_dir / "all_insights.md", "a", encoding="utf-8") as handle:
+                handle.write(
+                    f"\n## {now_iso()}\n\n{content.strip()}\n"
+                )
+
+    def total_runs_started(self) -> int:
+        return len(self.active_runs) + len(self.completed_runs)
+
+    def max_total_runs(self) -> int:
+        return int(self.config.get("max_total_runs", 100))
+
+    def runs_remaining(self) -> int:
+        return max(self.max_total_runs() - self.total_runs_started(), 0)
+
+    def max_total_runs_reached(self) -> bool:
+        return self.total_runs_started() >= self.max_total_runs()
 
     def next_run_number(self) -> int:
         all_runs = self.active_runs + self.completed_runs
@@ -147,6 +179,8 @@ class WorkspaceState:
         return {
             "active_runs": len(self.active_runs),
             "completed_runs": len(self.completed_runs),
+            "total_runs_started": self.total_runs_started(),
+            "runs_remaining": self.runs_remaining(),
             "best_val_loss": self.best_completed_val_loss(),
             "search_space_version": (
                 self.search_space.get("version") if self.search_space_exists() else None

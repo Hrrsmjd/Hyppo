@@ -25,16 +25,44 @@ def logs_dir(project_dir: str | Path) -> Path:
     return hyppo_dir(project_dir) / "logs"
 
 
-def project_config_path(project_dir: str | Path) -> Path:
+def legacy_project_config_path(project_dir: str | Path) -> Path:
     return Path(project_dir) / "hyppo.json"
+
+
+def project_config_path(project_dir: str | Path) -> Path:
+    return hyppo_dir(project_dir) / "hyppo.json"
+
+
+def existing_project_config_path(project_dir: str | Path) -> Path:
+    new_path = project_config_path(project_dir)
+    if new_path.exists():
+        return new_path
+
+    legacy_path = legacy_project_config_path(project_dir)
+    if legacy_path.exists():
+        return legacy_path
+
+    return new_path
+
+
+def is_project_dir_writable(project_dir: str | Path) -> bool:
+    project_path = Path(project_dir)
+    if not project_path.is_dir():
+        return False
+
+    config_path = existing_project_config_path(project_path)
+    if config_path.exists():
+        return os.access(config_path, os.W_OK)
+
+    return os.access(project_path, os.W_OK)
 
 
 def ensure_project_layout(project_dir: str | Path) -> None:
     project_dir = Path(project_dir)
+    hyppo_dir(project_dir).mkdir(parents=True, exist_ok=True)
     for d in [state_dir(project_dir), skills_dir(project_dir), logs_dir(project_dir)]:
         d.mkdir(parents=True, exist_ok=True)
 
-    # Copy default skills if missing
     if PACKAGE_SKILLS_DIR.is_dir():
         for path in PACKAGE_SKILLS_DIR.glob("*.md"):
             target = skills_dir(project_dir) / path.name
@@ -43,13 +71,14 @@ def ensure_project_layout(project_dir: str | Path) -> None:
 
 
 def load_project_config(project_dir: str | Path) -> dict:
-    path = project_config_path(project_dir)
+    path = existing_project_config_path(project_dir)
     if not path.exists():
-        raise FileNotFoundError(f"No hyppo.json in {project_dir}")
+        raise FileNotFoundError(f"No hyppo config found in {project_dir}")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def save_project_config(project_dir: str | Path, config: dict) -> None:
+    ensure_project_layout(project_dir)
     path = project_config_path(project_dir)
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
@@ -95,27 +124,41 @@ class HyppoConfig:
     def __init__(self):
         self.project_dir: str | None = None
         self.script: str | None = None
-        self.description: str = ""
+        self.llm_description: str = ""
+        self.user_description: str = ""
         self.params: list[str] = []
         self.provider: str = "anthropic"
         self.model: str = "claude-sonnet-4-20250514"
         self.wandb_project: str = "hpo-agent"
         self.wandb_entity: str | None = None
         self.heartbeat_minutes: int = 5
-        self.max_runs: int = 4
-        self.max_epochs: int = 30
+        self.max_total_runs: int = 100
+        self.max_concurrent_runs: int = 4
+        self.max_time: int = 30
         self.modal_app: str = "hpo-agent"
         self.modal_function: str = "train_model"
+
+    @property
+    def description(self) -> str:
+        parts = []
+        if self.llm_description:
+            parts.append(f"<llm_description>\n{self.llm_description}\n</llm_description>")
+        if self.user_description:
+            parts.append(f"<user_description>\n{self.user_description}\n</user_description>")
+        return "\n\n".join(parts)
 
     def to_dict(self) -> dict:
         return {
             "objective": "minimize",
             "metric": "val_loss",
-            "model_description": self.description,
+            "project_path": self.project_dir or "",
             "training_script": self.script or "",
+            "llm_description": self.llm_description,
+            "user_description": self.user_description,
             "available_hyperparameters": self.params,
-            "max_concurrent_runs": self.max_runs,
-            "max_epochs_per_run": self.max_epochs,
+            "max_total_runs": self.max_total_runs,
+            "max_concurrent_runs": self.max_concurrent_runs,
+            "max_time": self.max_time,
             "heartbeat_interval_minutes": self.heartbeat_minutes,
             "wandb_entity": self.wandb_entity,
             "wandb_project": self.wandb_project,
@@ -134,17 +177,19 @@ class HyppoConfig:
     def from_project(cls, project_dir: str) -> "HyppoConfig":
         data = load_project_config(project_dir)
         cfg = cls()
-        cfg.project_dir = project_dir
-        cfg.description = data.get("model_description", "")
-        cfg.script = data.get("training_script", "")
+        cfg.project_dir = str(Path(project_dir).resolve())
+        cfg.llm_description = data.get("llm_description", data.get("model_description", ""))
+        cfg.user_description = data.get("user_description", "")
+        cfg.script = data.get("training_script", "") or None
         cfg.params = data.get("available_hyperparameters", [])
         cfg.provider = data.get("llm_provider", "anthropic")
         cfg.model = data.get("llm_model", "claude-sonnet-4-20250514")
         cfg.wandb_project = data.get("wandb_project", "hpo-agent")
         cfg.wandb_entity = data.get("wandb_entity")
         cfg.heartbeat_minutes = data.get("heartbeat_interval_minutes", 5)
-        cfg.max_runs = data.get("max_concurrent_runs", 4)
-        cfg.max_epochs = data.get("max_epochs_per_run", 30)
+        cfg.max_total_runs = data.get("max_total_runs", data.get("max_runs", 100))
+        cfg.max_concurrent_runs = data.get("max_concurrent_runs", 4)
+        cfg.max_time = data.get("max_time", data.get("max_epochs_per_run", 30))
         cfg.modal_app = data.get("modal_app_name", "hpo-agent")
         cfg.modal_function = data.get("modal_function_name", "train_model")
         return cfg
@@ -152,36 +197,69 @@ class HyppoConfig:
     def detect_script(self) -> str | None:
         if not self.project_dir:
             return None
+
+        project_root = Path(self.project_dir)
         for name in ["train.py", "training.py", "main.py"]:
-            if (Path(self.project_dir) / name).exists():
+            if (project_root / name).exists():
                 return name
-        training_dir = Path(self.project_dir) / "training"
+
+        training_dir = project_root / "training"
         if training_dir.is_dir():
-            for f in training_dir.iterdir():
+            for f in sorted(training_dir.iterdir()):
                 if f.suffix == ".py" and f.name != "__init__.py":
                     return f"training/{f.name}"
+
         return None
 
     def validate(self) -> list[str]:
         errors = []
         if not self.project_dir:
             errors.append("No project directory set. Use /project <path>")
+        elif not is_project_dir_writable(self.project_dir):
+            errors.append(
+                f"Project directory is not writable: {self.project_dir}. "
+                "Choose a directory where Hyppo can create .hyppo/"
+            )
+
+        if not self.script:
+            errors.append("No training script set. Use /script <path> inside the project.")
+        elif self.project_dir:
+            script_path = (Path(self.project_dir) / self.script).resolve()
+            project_root = Path(self.project_dir).resolve()
+            try:
+                script_path.relative_to(project_root)
+            except ValueError:
+                errors.append("Training script must live inside the project directory.")
+            else:
+                if not script_path.exists():
+                    errors.append(f"Training script not found: {self.script}")
+
         if not self.description:
-            errors.append("No model description. Use /describe <text>")
+            errors.append(
+                "No project description is available. Re-run /project after configuring the "
+                "LLM or add notes with /describe."
+            )
+
         if self.heartbeat_minutes <= 0:
             errors.append("Heartbeat interval must be a positive integer")
-        if self.max_runs <= 0:
+        if self.max_total_runs <= 0:
+            errors.append("Max total runs must be a positive integer")
+        if self.max_concurrent_runs <= 0:
             errors.append("Max concurrent runs must be a positive integer")
-        if self.max_epochs <= 0:
-            errors.append("Max epochs per run must be a positive integer")
+        if self.max_concurrent_runs > self.max_total_runs:
+            errors.append("Max concurrent runs cannot exceed max total runs")
+        if self.max_time <= 0:
+            errors.append("Max time must be a positive integer")
         if not self.modal_app:
             errors.append("No Modal app configured. Use /modal <app> <function>")
         if not self.modal_function:
             errors.append("No Modal function configured. Use /modal <app> <function>")
+
         api_key = get_api_key(self.provider)
         if not api_key:
             errors.append(
                 f"No API key for {self.provider}. "
-                f"Use /apikey <key> or set the environment variable"
+                "Use /apikey <key> or set the environment variable"
             )
+
         return errors
