@@ -2,7 +2,7 @@
 
 ### initialize_search_space
 Define the initial search space. Call this on the first heartbeat
-after reading the model description in config.json.
+after reading the model description in the current state.
 Input: {
   "parameters": {
     "param_name": {
@@ -35,7 +35,7 @@ Start a new training run with specified hyperparameters.
 Input: {"params": {hyperparameter dict}}
 Parameters must match those in the current search space.
 Returns: {"run_id": str, "status": "launched"}
-Will fail if max concurrent runs reached.
+Will fail if max concurrent runs is already reached.
 
 ### update_strategy
 Write your current observations and plan to the strategy file.

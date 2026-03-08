@@ -1,7 +1,15 @@
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
+
+from hyppo.config import (
+    ensure_project_layout,
+    hyppo_dir,
+    logs_dir,
+    project_config_path,
+    skills_dir,
+    state_dir,
+)
 
 
 def now_iso() -> str:
@@ -9,23 +17,25 @@ def now_iso() -> str:
 
 
 class WorkspaceState:
-    def __init__(self, workspace_dir: str):
-        self.workspace_dir = Path(workspace_dir)
-        self.state_dir = self.workspace_dir / "state"
-        self.skills_dir = self.workspace_dir / "skills"
-        self.plots_dir = self.workspace_dir / "plots"
+    def __init__(self, project_dir: str):
+        self.project_dir = Path(project_dir).resolve()
+        self.hyppo_dir = hyppo_dir(self.project_dir)
+        self.state_dir = state_dir(self.project_dir)
+        self.skills_dir = skills_dir(self.project_dir)
+        self.logs_dir = logs_dir(self.project_dir)
+        self.config_path = project_config_path(self.project_dir)
 
         self._active_runs: list[dict] | None = None
         self._completed_runs: list[dict] | None = None
         self._config: dict | None = None
 
     @classmethod
-    def load_or_create(cls, workspace_dir: str) -> "WorkspaceState":
-        state = cls(workspace_dir)
-        state.state_dir.mkdir(parents=True, exist_ok=True)
-        state.plots_dir.mkdir(parents=True, exist_ok=True)
+    def load_or_create(cls, project_dir: str) -> "WorkspaceState":
+        state = cls(project_dir)
+        ensure_project_layout(project_dir)
 
-        # Initialize empty lists if files don't exist
+        if not state.config_path.exists():
+            raise FileNotFoundError(f"Missing config file: {state.config_path}")
         if not (state.state_dir / "active_runs.json").exists():
             state._write_json("active_runs.json", [])
         if not (state.state_dir / "completed_runs.json").exists():
@@ -33,27 +43,20 @@ class WorkspaceState:
 
         return state
 
-    # --- JSON helpers ---
-
     def _read_json(self, filename: str) -> dict | list:
-        path = self.state_dir / filename
-        with open(path) as f:
-            return json.load(f)
+        return json.loads((self.state_dir / filename).read_text(encoding="utf-8"))
 
     def _write_json(self, filename: str, data: dict | list) -> None:
-        path = self.state_dir / filename
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-
-    # --- Config ---
+        (self.state_dir / filename).write_text(
+            json.dumps(data, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
     @property
     def config(self) -> dict:
         if self._config is None:
-            self._config = self._read_json("config.json")
+            self._config = json.loads(self.config_path.read_text(encoding="utf-8"))
         return self._config
-
-    # --- Search space ---
 
     def search_space_exists(self) -> bool:
         return (self.state_dir / "search_space.json").exists()
@@ -70,8 +73,6 @@ class WorkspaceState:
     def write_search_space(self, data: dict) -> None:
         self._write_json("search_space.json", data)
 
-    # --- Active runs ---
-
     @property
     def active_runs(self) -> list[dict]:
         if self._active_runs is None:
@@ -81,7 +82,8 @@ class WorkspaceState:
     def save_active_runs(self) -> None:
         self._write_json("active_runs.json", self.active_runs)
 
-    # --- Completed runs ---
+    def replace_active_runs(self, runs: list[dict]) -> None:
+        self._active_runs = runs
 
     @property
     def completed_runs(self) -> list[dict]:
@@ -92,20 +94,15 @@ class WorkspaceState:
     def save_completed_runs(self) -> None:
         self._write_json("completed_runs.json", self.completed_runs)
 
-    # --- Strategy ---
-
     @property
     def strategy(self) -> str:
         path = self.state_dir / "strategy.md"
         if not path.exists():
             return ""
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
 
     def write_strategy(self, content: str) -> None:
-        path = self.state_dir / "strategy.md"
-        path.write_text(content)
-
-    # --- Run helpers ---
+        (self.state_dir / "strategy.md").write_text(content, encoding="utf-8")
 
     def next_run_number(self) -> int:
         all_runs = self.active_runs + self.completed_runs
@@ -121,13 +118,9 @@ class WorkspaceState:
         return max(numbers, default=0) + 1
 
     def find_active_run(self, run_id: str) -> dict | None:
-        for run in self.active_runs:
-            if run["run_id"] == run_id:
-                return run
-        return None
+        return next((run for run in self.active_runs if run.get("run_id") == run_id), None)
 
     def wandb_run_path(self, run_id: str) -> str:
-        """Build the W&B API path for a run: 'entity/project/run_id' or 'project/run_id'."""
         entity = self.config.get("wandb_entity")
         project = self.config["wandb_project"]
         if entity:
@@ -135,21 +128,27 @@ class WorkspaceState:
         return f"{project}/{run_id}"
 
     def best_completed_val_loss(self) -> float | None:
-        if not self.completed_runs:
-            return None
         losses = [
-            r["best_val_loss"]
-            for r in self.completed_runs
-            if isinstance(r.get("best_val_loss"), (int, float))
+            run["best_val_loss"]
+            for run in self.completed_runs
+            if isinstance(run.get("best_val_loss"), (int, float))
         ]
         if not losses:
             return None
         return min(losses)
-
-    # --- Save all ---
 
     def save(self) -> None:
         if self._active_runs is not None:
             self.save_active_runs()
         if self._completed_runs is not None:
             self.save_completed_runs()
+
+    def status_snapshot(self) -> dict:
+        return {
+            "active_runs": len(self.active_runs),
+            "completed_runs": len(self.completed_runs),
+            "best_val_loss": self.best_completed_val_loss(),
+            "search_space_version": (
+                self.search_space.get("version") if self.search_space_exists() else None
+            ),
+        }

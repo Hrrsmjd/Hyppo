@@ -1,6 +1,3 @@
-import wandb
-
-
 def compute_trend(losses: list[float]) -> str:
     if len(losses) < 2:
         return "insufficient_data"
@@ -19,31 +16,21 @@ def compute_trend(losses: list[float]) -> str:
 
 
 def _normalize_history(history) -> list[dict]:
-    """Convert W&B history to a list of dicts, regardless of input format.
-
-    Handles both pandas DataFrame (default when pandas is installed) and
-    list-of-dicts (returned by older SDK versions or when pandas is absent).
-    """
     if isinstance(history, list):
         return history
     try:
-        # pandas DataFrame
         return history.to_dict("records")
     except AttributeError:
         return list(history)
 
 
 def _extract_column(rows: list[dict], key: str) -> list:
-    """Extract non-None values for a key from a list of row dicts."""
     return [r[key] for r in rows if r.get(key) is not None]
 
 
 def fetch_run_metrics(wandb_run_path: str) -> dict:
-    """Query W&B API for a run's metrics. Returns a summary dict.
+    import wandb
 
-    Args:
-        wandb_run_path: Full W&B path, e.g. 'entity/project/run_id' or 'project/run_id'.
-    """
     api = wandb.Api()
     run = api.run(wandb_run_path)
     raw_history = run.history(keys=["val_loss", "train_loss", "epoch"])
@@ -59,17 +46,14 @@ def fetch_run_metrics(wandb_run_path: str) -> dict:
             "trend": "insufficient_data",
         }
 
-    # Filter to rows where val_loss exists to keep epoch/val_loss aligned
     valid = [r for r in rows if r.get("val_loss") is not None]
     val_losses = [r["val_loss"] for r in valid]
     epochs = [r["epoch"] for r in valid]
 
-    # Train loss: prefer from aligned rows, fall back to full history
     train_losses = [r["train_loss"] for r in valid if r.get("train_loss") is not None]
     if not train_losses:
         train_losses = _extract_column(rows, "train_loss")
 
-    # Epoch count from full history (not filtered by val_loss presence)
     all_epochs = _extract_column(rows, "epoch")
     epochs_completed = len(all_epochs)
 

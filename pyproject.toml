@@ -1,25 +1,45 @@
 [project]
 name = "hyppo"
-version = "0.1.0"
-description = "Autonomous HPO agent using Claude, Modal, and W&B"
+version = "0.2.0"
+description = "Autonomous hyperparameter optimization agent using LLMs, Modal, and W&B"
+readme = "README.md"
 requires-python = ">=3.10"
+keywords = ["cli", "hyperparameter-optimization", "llm", "modal", "wandb"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
-    "anthropic",
     "modal",
+    "openai",
     "wandb",
-    "matplotlib",
-    "numpy",
-    "pandas",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
 ]
+publish = [
+    "build",
+    "twine",
+]
 
-[tool.setuptools]
-packages = ["tools"]
-py-modules = ["state", "orchestrator", "prompt_builder", "hpo_agent"]
+[project.urls]
+Homepage = "https://github.com/Hrrsmjd/Hyppo"
+Repository = "https://github.com/Hrrsmjd/Hyppo"
+
+[project.scripts]
+hyppo = "hyppo.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["hyppo*"]
+
+[tool.setuptools.package-data]
+hyppo = ["skills/*.md"]
 
 [build-system]
 requires = ["setuptools>=64"]

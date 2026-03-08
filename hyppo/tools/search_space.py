@@ -1,4 +1,4 @@
-from state import WorkspaceState, now_iso
+from hyppo.state import WorkspaceState, now_iso
 
 
 def execute_initialize_search_space(parameters: dict, state: WorkspaceState) -> dict:

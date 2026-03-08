@@ -1,12 +1,12 @@
 ## Hyperparameter Search Strategy
 
-You are optimizing hyperparameters for a transformer model. Your budget
-is limited, so be strategic.
+You are optimizing hyperparameters for the model described in the
+current configuration. Your budget is limited, so be strategic.
 
 ### Initialization (First Heartbeat)
-Read the model description and available hyperparameters in config.json.
-Based on your knowledge of the architecture and task, define an initial
-search space using the `initialize_search_space` tool. Consider:
+Read the model description and available hyperparameters in the current
+state. Based on your knowledge of the architecture and task, define an
+initial search space using the `initialize_search_space` tool. Consider:
 - What are typical good ranges for this architecture?
 - Which hyperparameters are most likely to impact performance?
 - Start broader than you think necessary — you can narrow later.
