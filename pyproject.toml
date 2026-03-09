@@ -16,6 +16,7 @@ classifiers = [
 dependencies = [
     "modal",
     "openai",
+    "prompt_toolkit",
     "wandb",
 ]
 

@@ -1,5 +1,6 @@
 import os
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 from hyppo import __version__
@@ -15,6 +16,46 @@ from hyppo.config import (
 from hyppo.logger import MarkdownLogger
 from hyppo.project_context import generate_project_description
 
+COMMAND_SPECS = (
+    ("Setup commands:", (
+        ("/project", "<path>", "Set project directory and infer an LLM description"),
+        ("/script", "<path>", "Set training script path inside the project"),
+        ("/describe", "<text>", "Append extra user notes to the project description"),
+        ("/params", "<list>", "Set hyperparameters (comma-separated)"),
+        ("/provider", "<name>", "Set LLM provider (anthropic/openai/openrouter)"),
+        ("/model", "<name>", "Set LLM model"),
+        ("/apikey", "<key>", "Set API key for current provider"),
+        ("/wandb", "<project>", "Set W&B project (optionally entity/project)"),
+        ("/heartbeat", "<mins>", "Set heartbeat interval in minutes"),
+        ("/max_total_runs", "<n>", "Set max total runs across the whole campaign"),
+        ("/max_concurrent_runs", "<n>", "Set max concurrent runs"),
+        ("/max_time", "<mins>", "Set max runtime per run in minutes"),
+        ("/modal", "<app> <func>", "Set Modal app and function name"),
+        ("/config", "", "Show current configuration"),
+    )),
+    ("Campaign commands:", (
+        ("/optimize", "", "Start the optimization campaign"),
+        ("/status", "", "Show current campaign status"),
+        ("/stop", "", "Stop campaign (if running)"),
+        ("/quit", "", "Exit Hyppo"),
+    )),
+)
+
+COMMAND_HELP = {
+    name: description
+    for _, commands in COMMAND_SPECS
+    for name, _, description in commands
+}
+PATH_ARGUMENT_COMMANDS = {"/project", "/script"}
+DEFAULT_HISTORY_PATH = Path.home() / ".hyppo" / "history"
+
+
+@dataclass(frozen=True)
+class CompletionCandidate:
+    text: str
+    start_position: int
+    display_meta: str = ""
+
 
 def print_banner():
     print(f"Welcome to Hyppo {__version__} - autonomous hyperparameter optimization.")
@@ -22,31 +63,14 @@ def print_banner():
 
 
 def print_help():
-    print(
-        """
-Setup commands:
-  /project <path>             Set project directory and infer an LLM description
-  /script <path>              Set training script path inside the project
-  /describe <text>            Append extra user notes to the project description
-  /params <list>              Set hyperparameters (comma-separated)
-  /provider <name>            Set LLM provider (anthropic/openai/openrouter)
-  /model <name>               Set LLM model
-  /apikey <key>               Set API key for current provider
-  /wandb <project>            Set W&B project (optionally entity/project)
-  /heartbeat <mins>           Set heartbeat interval in minutes
-  /max_total_runs <n>         Set max total runs across the whole campaign
-  /max_concurrent_runs <n>    Set max concurrent runs
-  /max_time <mins>            Set max runtime per run in minutes
-  /modal <app> <func>         Set Modal app and function name
-  /config                     Show current configuration
-
-Campaign commands:
-  /optimize                   Start the optimization campaign
-  /status                     Show current campaign status
-  /stop                       Stop campaign (if running)
-  /quit                       Exit Hyppo
-"""
-    )
+    lines = [""]
+    for header, commands in COMMAND_SPECS:
+        lines.append(header)
+        for name, args, description in commands:
+            suffix = f" {args}" if args else ""
+            lines.append(f"  {name}{suffix:<26} {description}")
+        lines.append("")
+    print("\n".join(lines))
 
 
 def _preview(text: str, limit: int = 80) -> str:
@@ -187,6 +211,139 @@ def _maybe_generate_description(cfg: HyppoConfig, force: bool = False) -> bool:
     cfg.save()
     print("LLM project description refreshed.")
     return True
+
+
+def _split_completion_context(text_before_cursor: str) -> tuple[list[str], str]:
+    if not text_before_cursor:
+        return [], ""
+
+    tokens = text_before_cursor.split()
+    if text_before_cursor[-1].isspace():
+        return tokens, ""
+    if not tokens:
+        return [], text_before_cursor
+    return tokens[:-1], tokens[-1]
+
+
+def _path_completion_base(command: str, cfg: HyppoConfig, cwd: str) -> Path:
+    if command == "/script" and cfg.project_dir:
+        return Path(cfg.project_dir)
+    return Path(cwd)
+
+
+def _split_path_prefix(prefix: str) -> tuple[str, str]:
+    normalized = prefix.replace("\\", "/")
+    if normalized.endswith("/"):
+        return normalized.rstrip("/"), ""
+    parent_text, sep, stem = normalized.rpartition("/")
+    if not sep:
+        return "", normalized
+    if not parent_text and normalized.startswith("/"):
+        return "/", stem
+    return parent_text, stem
+
+
+def _resolve_completion_dir(base_dir: Path, parent_text: str) -> Path:
+    if parent_text == "/":
+        return Path("/")
+    if parent_text.startswith("~"):
+        return Path(os.path.expanduser(parent_text))
+    if parent_text.startswith("/"):
+        return Path(parent_text)
+    return (base_dir / parent_text).resolve() if parent_text else base_dir.resolve()
+
+
+def _candidate_prefix(parent_text: str) -> str:
+    if not parent_text:
+        return ""
+    if parent_text == "/":
+        return "/"
+    return parent_text.rstrip("/") + "/"
+
+
+def _path_completion_candidates(base_dir: Path, prefix: str, directories_only: bool) -> list[str]:
+    parent_text, stem = _split_path_prefix(prefix)
+    search_dir = _resolve_completion_dir(base_dir, parent_text)
+    display_prefix = _candidate_prefix(parent_text)
+
+    if not search_dir.is_dir():
+        return []
+
+    show_hidden = stem.startswith(".")
+    matches = []
+
+    for entry in search_dir.iterdir():
+        if not show_hidden and entry.name.startswith("."):
+            continue
+        if directories_only and not entry.is_dir():
+            continue
+        if stem and not entry.name.startswith(stem):
+            continue
+        candidate = f"{display_prefix}{entry.name}"
+        if entry.is_dir():
+            candidate += "/"
+        matches.append((not entry.is_dir(), entry.name.lower(), candidate))
+
+    return [candidate for _, _, candidate in sorted(matches)]
+
+
+def get_completion_candidates(
+    text_before_cursor: str,
+    cfg: HyppoConfig,
+    cwd: str | None = None,
+) -> list[CompletionCandidate]:
+    cwd = cwd or os.getcwd()
+    prior_tokens, current_token = _split_completion_context(text_before_cursor)
+
+    if not prior_tokens and current_token.startswith("/"):
+        matches = [
+            CompletionCandidate(
+                text=name,
+                start_position=-len(current_token),
+                display_meta=COMMAND_HELP[name],
+            )
+            for name in sorted(COMMAND_HELP)
+            if name.startswith(current_token)
+        ]
+        return matches
+
+    if len(prior_tokens) != 1:
+        return []
+
+    command = prior_tokens[0].lower()
+    if command not in PATH_ARGUMENT_COMMANDS or not current_token.startswith("@"):
+        return []
+
+    candidates = _path_completion_candidates(
+        _path_completion_base(command, cfg, cwd),
+        current_token[1:],
+        directories_only=command == "/project",
+    )
+    return [
+        CompletionCandidate(
+            text=f"@{candidate}",
+            start_position=-len(current_token),
+            display_meta="path",
+        )
+        for candidate in candidates
+    ]
+
+
+def normalize_interactive_line(line: str, cfg: HyppoConfig, cwd: str | None = None) -> str:
+    del cfg, cwd
+    stripped = line.strip()
+    if not stripped:
+        return ""
+
+    parts = stripped.split(maxsplit=1)
+    command = parts[0].lower()
+    if command not in PATH_ARGUMENT_COMMANDS or len(parts) == 1:
+        return stripped
+
+    argument = parts[1].strip()
+    if not argument.startswith("@"):
+        return stripped
+    return f"{command} {argument[1:]}"
 
 
 def handle_command(line: str, cfg: HyppoConfig, campaign_stop_event: threading.Event | None) -> str | None:
@@ -382,7 +539,7 @@ def run_campaign(cfg: HyppoConfig, stop_event: threading.Event):
     interval = cfg.heartbeat_minutes * 60
 
     print(f"\nCampaign started. Heartbeat every {cfg.heartbeat_minutes}m.")
-    print("Type /stop to stop, or /status to check progress.\n")
+    print("Type /stop or press Esc to stop, or /status to check progress.\n")
 
     while not stop_event.is_set():
         try:
@@ -410,65 +567,178 @@ def run_campaign(cfg: HyppoConfig, stop_event: threading.Event):
     print("\nCampaign stopped.")
 
 
+def load_startup_config(cwd: str | None = None) -> HyppoConfig:
+    cfg = HyppoConfig()
+    current_dir = os.path.abspath(cwd or os.getcwd())
+    config_path = existing_project_config_path(current_dir)
+    if not config_path.exists():
+        return cfg
+
+    try:
+        loaded = HyppoConfig.from_project(current_dir)
+    except Exception as exc:
+        print(f"Warning: could not load {config_path}: {exc}")
+        return cfg
+
+    print(f"Loaded config from {config_path}")
+    return loaded
+
+
+class CliSession:
+    def __init__(
+        self,
+        cfg: HyppoConfig | None = None,
+        cwd: str | None = None,
+        history_path: Path | None = None,
+        campaign_runner=run_campaign,
+        thread_factory=None,
+    ):
+        self.cwd = os.path.abspath(cwd or os.getcwd())
+        self.cfg = cfg or load_startup_config(self.cwd)
+        self.history_path = Path(history_path or DEFAULT_HISTORY_PATH)
+        self.stop_event = threading.Event()
+        self.campaign_thread: threading.Thread | None = None
+        self._campaign_runner = campaign_runner
+        self._thread_factory = thread_factory or threading.Thread
+
+    @property
+    def campaign_running(self) -> bool:
+        return self.campaign_thread is not None and self.campaign_thread.is_alive()
+
+    def start_campaign(self) -> None:
+        if not self.cfg.llm_description:
+            _maybe_generate_description(self.cfg, force=False)
+
+        errors = self.cfg.validate()
+        if errors:
+            print("Cannot start - fix these first:")
+            for error in errors:
+                print(f"  - {error}")
+            return
+
+        if self.campaign_running:
+            print("Campaign already running. Use /stop first.")
+            return
+
+        self.stop_event.clear()
+        self.campaign_thread = self._thread_factory(
+            target=self._campaign_runner,
+            args=(self.cfg, self.stop_event),
+            daemon=True,
+        )
+        self.campaign_thread.start()
+
+    def request_stop(self) -> str | None:
+        if not self.campaign_running:
+            return None
+        if self.stop_event.is_set():
+            return "Stop already requested. Campaign will stop after current heartbeat."
+        self.stop_event.set()
+        return "Stop signal sent. Campaign will stop after current heartbeat."
+
+    def process_line(self, line: str) -> bool:
+        normalized = normalize_interactive_line(line, self.cfg, self.cwd)
+        if not normalized:
+            return True
+
+        if not normalized.startswith("/"):
+            print("Commands start with /. Type /help for available commands.")
+            return True
+
+        result = handle_command(
+            normalized,
+            self.cfg,
+            self.stop_event if self.campaign_running else None,
+        )
+
+        if result == "quit":
+            if self.campaign_running:
+                print("Stopping campaign...")
+                self.stop_event.set()
+                self.campaign_thread.join(timeout=5)
+            return False
+
+        if result == "optimize":
+            self.start_campaign()
+
+        return True
+
+
+def _build_prompt_session(cli_session: CliSession):
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.application import run_in_terminal
+        from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+        from prompt_toolkit.completion import Completer, Completion
+        from prompt_toolkit.history import FileHistory
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.patch_stdout import patch_stdout
+        from prompt_toolkit.shortcuts import CompleteStyle
+    except ImportError as exc:
+        raise RuntimeError(
+            "prompt_toolkit is required for the interactive CLI. "
+            "Reinstall Hyppo with its dependencies."
+        ) from exc
+
+    class HyppoCompleter(Completer):
+        def get_completions(self, document, complete_event):
+            del complete_event
+            for candidate in get_completion_candidates(
+                document.text_before_cursor,
+                cli_session.cfg,
+                cwd=cli_session.cwd,
+            ):
+                yield Completion(
+                    candidate.text,
+                    start_position=candidate.start_position,
+                    display_meta=candidate.display_meta or None,
+                )
+
+    cli_session.history_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_session = PromptSession(
+        history=FileHistory(str(cli_session.history_path)),
+        auto_suggest=AutoSuggestFromHistory(),
+        completer=HyppoCompleter(),
+    )
+    bindings = KeyBindings()
+
+    @bindings.add("escape")
+    def handle_escape(event):
+        message = cli_session.request_stop()
+        if message:
+            run_in_terminal(lambda: print(message))
+            return
+        if event.current_buffer.complete_state:
+            event.current_buffer.cancel_completion()
+
+    prompt_kwargs = {
+        "key_bindings": bindings,
+        "complete_while_typing": True,
+        "complete_style": CompleteStyle.MULTI_COLUMN,
+        "reserve_space_for_menu": 8,
+    }
+    return prompt_session, patch_stdout, prompt_kwargs
+
+
 def main():
     print_banner()
 
-    cfg = HyppoConfig()
-    cwd = os.getcwd()
-    config_path = existing_project_config_path(cwd)
-    if config_path.exists():
-        try:
-            cfg = HyppoConfig.from_project(cwd)
-            print(f"Loaded config from {config_path}")
-        except Exception as exc:
-            print(f"Warning: could not load {config_path}: {exc}")
-
-    campaign_thread: threading.Thread | None = None
-    stop_event = threading.Event()
+    cli_session = CliSession()
+    prompt_session, patch_stdout, prompt_kwargs = _build_prompt_session(cli_session)
 
     while True:
         try:
-            line = input("hyppo> ").strip()
+            with patch_stdout(raw=True):
+                line = prompt_session.prompt(
+                    "hyppo> ",
+                    **prompt_kwargs,
+                )
         except (EOFError, KeyboardInterrupt):
             print()
             break
 
-        if not line:
-            continue
-
-        if not line.startswith("/"):
-            print("Commands start with /. Type /help for available commands.")
-            continue
-
-        result = handle_command(line, cfg, stop_event if campaign_thread else None)
-
-        if result == "quit":
-            if campaign_thread and campaign_thread.is_alive():
-                print("Stopping campaign...")
-                stop_event.set()
-                campaign_thread.join(timeout=5)
+        if not cli_session.process_line(line):
             break
-
-        if result == "optimize":
-            if not cfg.llm_description:
-                _maybe_generate_description(cfg, force=False)
-
-            errors = cfg.validate()
-            if errors:
-                print("Cannot start - fix these first:")
-                for error in errors:
-                    print(f"  - {error}")
-                continue
-
-            if campaign_thread and campaign_thread.is_alive():
-                print("Campaign already running. Use /stop first.")
-                continue
-
-            stop_event.clear()
-            campaign_thread = threading.Thread(
-                target=run_campaign, args=(cfg, stop_event), daemon=True
-            )
-            campaign_thread.start()
 
 
 if __name__ == "__main__":
