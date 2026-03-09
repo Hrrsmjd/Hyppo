@@ -1,6 +1,6 @@
 # Hyppo
 
-![Hyppo Logo](./hyppo.png)
+![Hyppo Logo](./hyppo.jpg)
 
 Hyppo is an autonomous hyperparameter optimization CLI for training jobs that run on Modal and log metrics to Weights & Biases.
 
