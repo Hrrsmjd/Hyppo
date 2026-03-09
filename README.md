@@ -1,10 +1,31 @@
 # Hyppo
 
+![Hyppo Logo](./hyppo.png)
+
 Hyppo is an autonomous hyperparameter optimization CLI for training jobs that run on Modal and log metrics to Weights & Biases.
 
 Point Hyppo at a training codebase, tell it which hyperparameters it is allowed to tune, and let an LLM run the optimization loop. Hyppo keeps all campaign state on disk, launches runs on Modal, reads metrics from W&B, and iteratively updates strategy and search space over time.
 
 ## Install
+
+With `uv` for local development:
+
+```bash
+uv sync --extra dev
+uv run hyppo
+```
+
+With `uv` as an installed CLI tool from a local checkout:
+
+```bash
+uv tool install .
+```
+
+With `uv` from GitHub:
+
+```bash
+uv tool install 'git+https://github.com/Hrrsmjd/Hyppo.git'
+```
 
 From a local checkout:
 
@@ -22,6 +43,15 @@ For development:
 
 ```bash
 pip install -e ".[dev]"
+```
+
+If you prefer a manual `uv` virtualenv flow:
+
+```bash
+uv venv
+source .venv/bin/activate
+uv pip install -e ".[dev]"
+hyppo
 ```
 
 After publishing to PyPI:
@@ -67,6 +97,19 @@ Launch the CLI:
 ```bash
 hyppo
 ```
+
+Or with `uv` from a repo checkout:
+
+```bash
+uv run hyppo
+```
+
+### Interactive CLI features
+
+- Start typing a slash command to get autocomplete suggestions, such as `/pa` -> `/params`.
+- Use `@` inside `/project` and `/script` to autocomplete paths, including relative paths, `../...`, `~/...`, and absolute paths.
+- Use the up arrow to recall previous commands from history.
+- Press `Esc` while a campaign is running to request a clean stop without exiting the CLI.
 
 Then configure a campaign:
 
@@ -142,7 +185,8 @@ Hyppo writes campaign state inside your project under `.hyppo/`.
 
 ```text
 ~/.hyppo/
-└── credentials.json
+├── credentials.json
+└── history
 
 your-project/
 └── .hyppo/
@@ -198,10 +242,12 @@ Note:
 | `/max_total_runs <n>` | Set the total run budget |
 | `/max_concurrent_runs <n>` | Set the concurrent run cap |
 | `/max_time <minutes>` | Set Hyppo's per-run time budget |
+| `/help` | Show available commands |
 | `/config` | Show the current config |
 | `/status` | Show campaign status |
 | `/optimize` | Start the campaign |
 | `/stop` | Stop the campaign after the current heartbeat |
+| `/quit` or `/exit` | Exit the CLI |
 
 ## Supported LLM Providers
 
