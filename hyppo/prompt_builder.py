@@ -3,6 +3,12 @@ from pathlib import Path
 
 from hyppo.state import WorkspaceState
 
+MAX_DESCRIPTION_CHARS = 3000
+MAX_STRATEGY_CHARS = 2500
+MAX_ACTIVE_HISTORY_POINTS = 5
+MAX_RECENT_COMPLETED_RUNS = 6
+MAX_OLDER_COMPLETED_SUMMARY = 6
+
 
 def load_all_skills(skills_dir: Path) -> str:
     parts = []
@@ -28,15 +34,22 @@ def _format_params(params: dict) -> str:
     return ", ".join(f"{key}={value}" for key, value in sorted(params.items()))
 
 
-def _format_history(history: list[dict]) -> str:
+def _truncate_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n\n[Truncated to keep prompt size bounded.]"
+
+
+def _format_history(history: list[dict], max_points: int | None = None) -> str:
     if not history:
         return "No metric history yet."
 
+    displayed = history[-max_points:] if max_points else history
     lines = [
         "| time_s | progress_% | val_loss | train_loss |",
         "| ---: | ---: | ---: | ---: |",
     ]
-    for point in history:
+    for point in displayed:
         lines.append(
             "| {time_seconds} | {progress_percent} | {val_loss} | {train_loss} |".format(
                 time_seconds=_format_metric(point.get("time_seconds"), digits=1),
@@ -45,10 +58,19 @@ def _format_history(history: list[dict]) -> str:
                 train_loss=_format_metric(point.get("train_loss")),
             )
         )
+    if max_points and len(history) > len(displayed):
+        lines.append(
+            f"\nShowing the most recent {len(displayed)} of {len(history)} history points."
+        )
     return "\n".join(lines)
 
 
-def _format_runs(runs: list[dict], title: str, include_history: bool) -> str:
+def _format_runs(
+    runs: list[dict],
+    title: str,
+    include_history: bool,
+    history_points: int | None = None,
+) -> str:
     if not runs:
         return f"## {title}\nNo runs."
 
@@ -74,9 +96,31 @@ def _format_runs(runs: list[dict], title: str, include_history: bool) -> str:
         if include_history:
             lines.append("")
             lines.append(f"### {run.get('run_id', '-') } Metric History")
-            lines.append(_format_history(run.get("metric_history", [])))
+            lines.append(_format_history(run.get("metric_history", []), max_points=history_points))
             lines.append("")
     return "\n".join(lines).strip()
+
+
+def _config_for_prompt(config: dict) -> dict:
+    return {
+        "objective": config.get("objective", "minimize"),
+        "metric": config.get("metric", "val_loss"),
+        "training_script": config.get("training_script", ""),
+        "max_total_runs": config.get("max_total_runs"),
+        "max_concurrent_runs": config.get("max_concurrent_runs"),
+        "max_time": config.get("max_time"),
+    }
+
+
+def _search_space_for_prompt(search_space: dict) -> dict:
+    compact = {
+        "version": search_space.get("version"),
+        "parameters": search_space.get("parameters", {}),
+    }
+    changelog = search_space.get("changelog") or []
+    if changelog:
+        compact["latest_change"] = changelog[-1]
+    return compact
 
 
 def format_state_for_prompt(state: WorkspaceState) -> str:
@@ -85,13 +129,15 @@ def format_state_for_prompt(state: WorkspaceState) -> str:
     user_description = config_for_prompt.pop("user_description", "").strip()
 
     sections = [
-        "## Configuration\n```json\n" + json.dumps(config_for_prompt, indent=2) + "\n```",
+        "## Configuration\n```json\n" + json.dumps(_config_for_prompt(config_for_prompt), indent=2) + "\n```",
     ]
 
     description_parts = []
     if llm_description:
         description_parts.append(
-            "<llm_description>\n" + llm_description + "\n</llm_description>"
+            "<llm_description>\n"
+            + _truncate_text(llm_description, MAX_DESCRIPTION_CHARS)
+            + "\n</llm_description>"
         )
     if user_description:
         description_parts.append(
@@ -103,7 +149,7 @@ def format_state_for_prompt(state: WorkspaceState) -> str:
     if state.search_space_exists():
         sections.append(
             "## Current Search Space\n```json\n"
-            + json.dumps(state.search_space, indent=2)
+            + json.dumps(_search_space_for_prompt(state.search_space), indent=2)
             + "\n```"
         )
     else:
@@ -116,34 +162,37 @@ def format_state_for_prompt(state: WorkspaceState) -> str:
     )
     sections.append("## Run Limits\n" + run_limits)
 
-    sections.append(_format_runs(state.active_runs, "Active Runs", include_history=True))
+    sections.append(
+        _format_runs(
+            state.active_runs,
+            "Active Runs",
+            include_history=True,
+            history_points=MAX_ACTIVE_HISTORY_POINTS,
+        )
+    )
 
     if state.completed_runs:
-        max_recent_runs = 10
-        recent = state.completed_runs[-max_recent_runs:]
-        older = state.completed_runs[:-max_recent_runs]
+        recent = state.completed_runs[-MAX_RECENT_COMPLETED_RUNS:]
+        older = state.completed_runs[:-MAX_RECENT_COMPLETED_RUNS]
         if older:
             summary = [
                 (
                     f"- {run.get('run_id', '?')}: best_val_loss={_format_metric(run.get('best_val_loss'))}, "
                     f"best_time_s={_format_metric(run.get('best_time_seconds'), digits=1)}"
                 )
-                for run in older
+                for run in older[-MAX_OLDER_COMPLETED_SUMMARY:]
             ]
             sections.append(
                 "## Older Completed Runs\n"
-                f"Summarized to keep prompt size bounded ({len(older)} runs).\n"
+                f"Summarized to keep prompt size bounded ({len(older)} runs, showing the most recent {min(len(older), MAX_OLDER_COMPLETED_SUMMARY)}).\n"
                 + "\n".join(summary)
             )
-        sections.append(_format_runs(recent, "Recent Completed Runs", include_history=True))
+        sections.append(_format_runs(recent, "Recent Completed Runs", include_history=False))
     else:
         sections.append("## Completed Runs\nNo completed runs yet.")
 
     if state.strategy:
-        sections.append("## Strategy\n" + state.strategy)
-
-    if state.insights_history:
-        sections.append("## Historical Insights\n" + state.insights_history)
+        sections.append("## Strategy\n" + _truncate_text(state.strategy, MAX_STRATEGY_CHARS))
 
     return "\n\n".join(sections)
 
@@ -165,6 +214,15 @@ def build_prompt(state: WorkspaceState) -> str:
             "Do not invent or add any other hyperparameters."
         )
     prompt_parts.append("# Current State\n\n" + state_text)
+
+    prompt_parts.append(
+        "## Heartbeat Sequencing Instructions\n"
+        "Before launching any new runs on a heartbeat, first call `update_strategy` to record "
+        "your observations, reasoning, and the plan for the runs you are about to launch. "
+        "If you need to change the search space, do that before `launch_run` as well. "
+        "Preferred order when launching is: `update_strategy`, optional `update_search_space`, "
+        "then `launch_run`."
+    )
 
     if not state.search_space_exists():
         prompt_parts.append(

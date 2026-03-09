@@ -1,27 +1,42 @@
 ## Reading Training Metrics
 
-Each heartbeat includes a metrics table for active runs showing summary
-statistics such as epochs completed, best validation loss, current train
-loss, recent validation losses, and a trend label. Use these to assess
-training:
+Each heartbeat includes run summaries plus metric history for active and
+recent completed runs. The most important fields are:
 
-- **Steady decrease in both losses**: Healthy training, let it continue
-- **Oscillating but trending down**: LR may be slightly high, but
-  could still converge — monitor for 2-3 more heartbeats
-- **Train loss dropping but val_loss rising**: Overfitting — consider
-  killing, or note that regularization parameters (dropout, weight_decay,
-  label_smoothing) might need to be added to the search space
-- **Both losses flat for many epochs**: Converged or stuck; check if
-  val_loss is competitive with best runs
-- **Loss exploded (very large values)**: Kill immediately
-- **Val loss at search space boundary**: Consider expanding that range
+- `best_val_loss`
+- `latest_val_loss`
+- `latest_train_loss`
+- `elapsed_time_seconds`
+- `progress_percent`
+- `trend`
+
+Use them comparatively, not in isolation. Prefer comparing runs at
+similar progress percentages rather than raw wall-clock time.
+
+- **Steady decrease in train and validation loss**: healthy training;
+  usually keep running
+- **Validation improving but slowly**: often still worth keeping if the
+  run is competitive at similar progress
+- **Train loss down, val loss flat or rising**: likely overfitting;
+  regularization or augmentation may need to change
+- **Oscillation with weak net improvement**: learning rate may be too
+  high or batch size too small
+- **Very poor best_val_loss after substantial progress**: likely not
+  worth more budget
+- **Best run sits near the edge of a range**: consider expanding that
+  dimension in the search space
 
 ## Using Metrics for Search Space Decisions
 
-The metrics tables can inform search space updates:
-- If many runs show overfitting (train-val gap widening), consider adding
-  regularization parameters
-- If runs with high LR all show oscillation, narrow the LR upper bound
-- If loss values look identical across different values of a parameter,
-  that parameter probably doesn't matter — remove it to focus the budget
-- If the best result is at the boundary of a range, expand that range
+The metrics tables should drive explicit decisions:
+
+- If many runs show overfitting, add or emphasize regularization
+  parameters if they are allowed.
+- If high-learning-rate runs repeatedly oscillate or diverge, narrow the
+  upper end of the learning-rate range.
+- If low-learning-rate runs improve too slowly while staying stable,
+  narrow the lower end upward.
+- If a parameter changes widely across runs with little effect on
+  outcomes, remove it or narrow it sharply.
+- If one region dominates, focus future runs there but keep enough
+  diversity to test whether the pattern is real.

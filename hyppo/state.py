@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +15,42 @@ from hyppo.config import (
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _extract_insight_line(content: str, limit: int = 200) -> str:
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if lowered.startswith("insight:"):
+            insight = line.split(":", 1)[1].strip()
+            break
+        if line.startswith("#"):
+            continue
+        if line.startswith(("- ", "* ")):
+            insight = line[2:].strip()
+            break
+        insight = line
+        break
+    else:
+        return ""
+
+    insight = re.sub(r"\s+", " ", insight).strip()
+    if len(insight) <= limit:
+        return insight
+    return insight[: limit - 3].rstrip() + "..."
+
+
+def _last_logged_insight(path: Path) -> str:
+    if not path.exists():
+        return ""
+    for raw_line in reversed(path.read_text(encoding="utf-8").splitlines()):
+        line = raw_line.strip()
+        if not line or "|" not in line:
+            continue
+        return line.split("|", 1)[1].strip()
+    return ""
 
 
 class WorkspaceState:
@@ -119,10 +156,11 @@ class WorkspaceState:
         path.write_text(content, encoding="utf-8")
 
         if content.strip() and content != previous:
-            with open(self.state_dir / "all_insights.md", "a", encoding="utf-8") as handle:
-                handle.write(
-                    f"\n## {now_iso()}\n\n{content.strip()}\n"
-                )
+            insight = _extract_insight_line(content)
+            insights_path = self.state_dir / "all_insights.md"
+            if insight and insight != _last_logged_insight(insights_path):
+                with open(insights_path, "a", encoding="utf-8") as handle:
+                    handle.write(f"{now_iso()} | {insight}\n")
 
     def total_runs_started(self) -> int:
         return len(self.active_runs) + len(self.completed_runs)

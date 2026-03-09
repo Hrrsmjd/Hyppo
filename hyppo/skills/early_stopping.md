@@ -1,19 +1,39 @@
 ## When to Kill a Run
 
-Kill a run early to free budget for more promising experiments.
+Kill a run early only when that clearly improves the remaining budget.
 
 ### Kill immediately if:
+
 - Loss has exploded (NaN or very large values)
-- Val_loss is 2x or more worse than the current best after 30%+ of
-  max epochs
+- Validation loss is clearly catastrophic relative to the current best
+  after enough progress to trust the signal
+- The run is failing in a way that is unlikely to recover
 
 ### Consider killing if:
-- Val_loss has plateaued for 5+ epochs with no improvement, and it's
-  significantly worse than the best known run
-- Training loss is dropping but val_loss is rising (overfitting)
-- Recent val_loss values show repeated large oscillations
+
+- At similar progress, the run is materially worse than the current best
+  and its trend is flat or deteriorating
+- Training loss is dropping but validation loss is rising, suggesting
+  strong overfitting
+- Recent validation history shows repeated large oscillations with no
+  net improvement
+- The run is in a crowded region of the space and provides little new
+  information
 
 ### Keep running if:
-- Loss is still actively decreasing, even if not yet competitive
+
+- Loss is still actively decreasing and the run remains plausible at its
+  current progress
 - You're in the fine-tuning phase and need to confirm a result
 - The run is testing a genuinely novel region of the search space
+- The run is behind on wall-clock time but still competitive by
+  `progress_percent`
+
+### Early-Stopping Discipline
+
+- Compare runs at similar `progress_percent` whenever possible.
+- Do not kill solely because a run started worse than the current best.
+- Be more conservative early in a campaign when you still need
+  information about the landscape.
+- Be more aggressive late in a campaign when the budget should focus on
+  the best regions.

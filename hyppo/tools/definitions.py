@@ -74,7 +74,10 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "update_strategy",
-            "description": "Persist observations and next steps to the strategy file.",
+            "description": (
+                "Persist observations and next steps to the strategy file. Start the content "
+                "with a single-line `Insight: ...` summary of what changed this heartbeat."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

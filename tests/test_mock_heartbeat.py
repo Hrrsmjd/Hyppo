@@ -1,8 +1,10 @@
 """Full heartbeat loop with mocked LLM (OpenAI format)."""
 
 import json
+import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from dataclasses import dataclass, field
 from unittest.mock import patch
 
@@ -14,7 +16,7 @@ from hyppo.orchestrator import (
 )
 from hyppo.prompt_builder import build_prompt, format_state_for_prompt
 from hyppo.state import WorkspaceState
-from hyppo.tools.modal_runner import execute_launch_run
+from hyppo.tools.modal_runner import execute_launch_run, launch_modal_run
 
 
 @dataclass
@@ -130,6 +132,43 @@ class HeartbeatTests(unittest.TestCase):
         text = format_state_for_prompt(state)
         self.assertIn("Older Completed Runs", text)
         self.assertIn("Recent Completed Runs", text)
+        self.assertNotIn("Metric History", text)
+
+    def test_active_run_history_is_truncated_in_prompt(self):
+        state = WorkspaceState.load_or_create(self.temp_dir.name)
+        state.active_runs.append(
+            {
+                "run_id": "run_001",
+                "status": "running",
+                "elapsed_time_seconds": 120.0,
+                "progress_percent": 20.0,
+                "best_val_loss": 0.5,
+                "best_time_seconds": 120.0,
+                "trend": "improving",
+                "params": {"learning_rate": 0.001},
+                "metric_history": [
+                    {
+                        "time_seconds": float(index),
+                        "progress_percent": float(index),
+                        "val_loss": 1.0 - index * 0.01,
+                        "train_loss": 1.2 - index * 0.01,
+                    }
+                    for index in range(8)
+                ],
+            }
+        )
+
+        text = format_state_for_prompt(state)
+        self.assertIn("Showing the most recent 5 of 8 history points.", text)
+
+    def test_historical_insights_not_included_in_prompt(self):
+        state = WorkspaceState.load_or_create(self.temp_dir.name)
+        state.write_strategy("Current strategy")
+        state.write_strategy("Updated strategy")
+
+        text = format_state_for_prompt(state)
+        self.assertIn("## Strategy", text)
+        self.assertNotIn("## Historical Insights", text)
 
     def test_prompt_includes_description_tags(self):
         state = WorkspaceState.load_or_create(self.temp_dir.name)
@@ -141,6 +180,12 @@ class HeartbeatTests(unittest.TestCase):
         state = WorkspaceState.load_or_create(self.temp_dir.name)
         prompt = build_prompt(state)
         self.assertIn("No search space has been defined yet", prompt)
+
+    def test_prompt_requires_strategy_before_launching_runs(self):
+        state = WorkspaceState.load_or_create(self.temp_dir.name)
+        prompt = build_prompt(state)
+        self.assertIn("Before launching any new runs on a heartbeat", prompt)
+        self.assertIn("Preferred order when launching is", prompt)
 
     def test_run_heartbeat_initializes_search_space(self):
         state = WorkspaceState.load_or_create(self.temp_dir.name)
@@ -172,6 +217,73 @@ class HeartbeatTests(unittest.TestCase):
         run_heartbeat(state, client=client)
         self.assertTrue(state.search_space_exists())
         self.assertIn("learning_rate", state.read_search_space()["parameters"])
+
+    def test_run_heartbeat_survives_missing_changelog_entry(self):
+        state = WorkspaceState.load_or_create(self.temp_dir.name)
+        client = FakeClient(
+            responses=[
+                make_tool_response(
+                    [
+                        {
+                            "id": "tool_1",
+                            "name": "update_strategy",
+                            "input": {"content": "Insight: Narrow learning rate next."},
+                        },
+                        {
+                            "id": "tool_2",
+                            "name": "update_search_space",
+                            "input": {
+                                "updates": {
+                                    "learning_rate": {
+                                        "type": "continuous",
+                                        "min": 1e-4,
+                                        "max": 1e-2,
+                                        "scale": "log",
+                                        "notes": "Narrowed after early results.",
+                                    }
+                                }
+                            },
+                        },
+                    ]
+                ),
+                make_text_response("Recovered after tool validation error."),
+            ]
+        )
+
+        run_heartbeat(state, client=client)
+
+        self.assertEqual(state.strategy, "Insight: Narrow learning rate next.")
+        self.assertFalse(state.search_space_exists())
+
+    def test_run_heartbeat_survives_missing_updates(self):
+        state = WorkspaceState.load_or_create(self.temp_dir.name)
+        client = FakeClient(
+            responses=[
+                make_tool_response(
+                    [
+                        {
+                            "id": "tool_1",
+                            "name": "update_strategy",
+                            "input": {"content": "Insight: Search space change needs correction."},
+                        },
+                        {
+                            "id": "tool_2",
+                            "name": "update_search_space",
+                            "input": {"changelog_entry": "Attempted to refine around the best run."},
+                        },
+                    ]
+                ),
+                make_text_response("Recovered after missing updates error."),
+            ]
+        )
+
+        run_heartbeat(state, client=client)
+
+        self.assertEqual(
+            state.strategy,
+            "Insight: Search space change needs correction.",
+        )
+        self.assertFalse(state.search_space_exists())
 
     def test_launch_run_validates_param_range(self):
         state = WorkspaceState.load_or_create(self.temp_dir.name)
@@ -234,6 +346,66 @@ class HeartbeatTests(unittest.TestCase):
         result = execute_launch_run({"learning_rate": "fast"}, state)
 
         self.assertEqual(result["error"], "Parameter 'learning_rate' must be numeric")
+
+    def test_launch_modal_run_passes_max_time_minutes_when_supported(self):
+        calls = []
+
+        class FakeFunction:
+            def spawn(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(object_id="call_123")
+
+        fake_modal = SimpleNamespace(
+            Function=SimpleNamespace(from_name=lambda app_name, function_name: FakeFunction())
+        )
+
+        with patch.dict(sys.modules, {"modal": fake_modal}):
+            result = launch_modal_run(
+                "run_001",
+                {"learning_rate": 0.001},
+                {
+                    "modal_app_name": "hpo-agent",
+                    "modal_function_name": "train_model",
+                    "wandb_project": "test-project",
+                    "wandb_entity": None,
+                    "max_time": 15,
+                },
+            )
+
+        self.assertEqual(result["modal_call_id"], "call_123")
+        self.assertEqual(calls[0]["max_time_minutes"], 15)
+
+    def test_launch_modal_run_retries_without_max_time_minutes_if_unsupported(self):
+        calls = []
+
+        class FakeFunction:
+            def spawn(self, **kwargs):
+                calls.append(kwargs)
+                if "max_time_minutes" in kwargs:
+                    raise TypeError("train_model() got an unexpected keyword argument 'max_time_minutes'")
+                return SimpleNamespace(object_id="call_456")
+
+        fake_modal = SimpleNamespace(
+            Function=SimpleNamespace(from_name=lambda app_name, function_name: FakeFunction())
+        )
+
+        with patch.dict(sys.modules, {"modal": fake_modal}):
+            result = launch_modal_run(
+                "run_001",
+                {"learning_rate": 0.001},
+                {
+                    "modal_app_name": "hpo-agent",
+                    "modal_function_name": "train_model",
+                    "wandb_project": "test-project",
+                    "wandb_entity": None,
+                    "max_time": 15,
+                },
+            )
+
+        self.assertEqual(result["modal_call_id"], "call_456")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("max_time_minutes", calls[0])
+        self.assertNotIn("max_time_minutes", calls[1])
 
     def test_update_runs_completed(self):
         state = WorkspaceState.load_or_create(self.temp_dir.name)

@@ -142,7 +142,33 @@ def update_runs_from_modal_and_wandb(state: WorkspaceState) -> None:
     state.save()
 
 
+def _validate_tool_input(tool_name: str, tool_input) -> str | None:
+    if not isinstance(tool_input, dict):
+        return f"Invalid input for {tool_name}: expected a JSON object"
+
+    required_fields = {
+        "initialize_search_space": ["parameters"],
+        "update_search_space": ["updates", "changelog_entry"],
+        "launch_run": ["params"],
+        "update_strategy": ["content"],
+    }
+
+    if tool_name not in required_fields:
+        return None
+
+    missing = [field for field in required_fields[tool_name] if field not in tool_input]
+    if missing:
+        missing_fields = ", ".join(missing)
+        return f"Invalid input for {tool_name}: missing required field(s): {missing_fields}"
+
+    return None
+
+
 def execute_tool_call(tool_name: str, tool_input: dict, state: WorkspaceState) -> dict:
+    validation_error = _validate_tool_input(tool_name, tool_input)
+    if validation_error:
+        return {"error": validation_error}
+
     if tool_name == "initialize_search_space":
         return execute_initialize_search_space(tool_input["parameters"], state)
     if tool_name == "update_search_space":
@@ -194,7 +220,10 @@ def execute_tool_calls(
                 tool_input = {"raw_arguments": tc.function.arguments}
                 result = {"error": f"Invalid tool arguments: {exc.msg}"}
             else:
-                result = execute_tool_call(tc.function.name, tool_input, state)
+                try:
+                    result = execute_tool_call(tc.function.name, tool_input, state)
+                except Exception as exc:
+                    result = {"error": f"Tool execution failed for {tc.function.name}: {exc}"}
             print(f"  Tool: {tc.function.name} -> {json.dumps(result)}")
             if logger:
                 logger.log_tool(tc.function.name, tool_input, result)

@@ -372,6 +372,7 @@ def handle_command(line: str, cfg: HyppoConfig, campaign_stop_event: threading.E
 
         cfg.project_dir = path
         cfg.script = cfg.detect_script()
+        cfg.llm_description = ""
         config_changed = True
 
         print(f"Project directory: {cfg.project_dir}")
@@ -379,8 +380,7 @@ def handle_command(line: str, cfg: HyppoConfig, campaign_stop_event: threading.E
             print(f"Detected training script: {cfg.script}")
         else:
             print("No training script detected. Set one with /script <path>.")
-
-        _maybe_generate_description(cfg, force=True)
+        print("LLM project description will refresh on /optimize.")
 
     elif cmd == "/script":
         if not arg:
@@ -390,9 +390,10 @@ def handle_command(line: str, cfg: HyppoConfig, campaign_stop_event: threading.E
         if not script:
             return None
         cfg.script = script
+        cfg.llm_description = ""
         config_changed = True
         print(f"Training script: {cfg.script}")
-        _maybe_generate_description(cfg, force=True)
+        print("LLM project description will refresh on /optimize.")
 
     elif cmd == "/describe":
         if not arg:
@@ -417,7 +418,6 @@ def handle_command(line: str, cfg: HyppoConfig, campaign_stop_event: threading.E
         cfg.provider = arg
         config_changed = True
         print(f"Provider: {arg}")
-        _maybe_generate_description(cfg, force=False)
 
     elif cmd == "/model":
         if not arg:
@@ -426,7 +426,6 @@ def handle_command(line: str, cfg: HyppoConfig, campaign_stop_event: threading.E
         cfg.model = arg
         config_changed = True
         print(f"Model: {arg}")
-        _maybe_generate_description(cfg, force=False)
 
     elif cmd == "/apikey":
         if not arg:
@@ -434,7 +433,6 @@ def handle_command(line: str, cfg: HyppoConfig, campaign_stop_event: threading.E
             return None
         save_api_key(cfg.provider, arg)
         print(f"API key saved for {cfg.provider}")
-        _maybe_generate_description(cfg, force=False)
 
     elif cmd == "/wandb":
         if not arg:
@@ -605,7 +603,17 @@ class CliSession:
     def campaign_running(self) -> bool:
         return self.campaign_thread is not None and self.campaign_thread.is_alive()
 
+    def refresh_config_from_disk(self) -> None:
+        if not self.cfg.project_dir:
+            return
+        config_path = existing_project_config_path(self.cfg.project_dir)
+        if not config_path.exists():
+            return
+        self.cfg = HyppoConfig.from_project(self.cfg.project_dir)
+
     def start_campaign(self) -> None:
+        self.refresh_config_from_disk()
+
         if not self.cfg.llm_description:
             _maybe_generate_description(self.cfg, force=False)
 

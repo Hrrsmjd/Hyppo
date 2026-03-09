@@ -76,9 +76,24 @@ class WorkspaceStateTests(unittest.TestCase):
 
     def test_strategy_history_is_preserved(self):
         state = WorkspaceState.load_or_create(self.temp_dir.name)
-        state.write_strategy("First insight")
-        state.write_strategy("Second insight")
+        state.write_strategy("Insight: First insight\n\nDetails here")
+        state.write_strategy("Insight: Second insight\n\nMore details here")
 
-        self.assertEqual(state.strategy, "Second insight")
+        self.assertEqual(state.strategy, "Insight: Second insight\n\nMore details here")
         self.assertIn("First insight", state.insights_history)
         self.assertIn("Second insight", state.insights_history)
+
+    def test_strategy_history_deduplicates_repeated_insight(self):
+        state = WorkspaceState.load_or_create(self.temp_dir.name)
+        state.write_strategy("Insight: Same conclusion\n\nDetails A")
+        state.write_strategy("Insight: Same conclusion\n\nDetails B")
+
+        lines = [line for line in state.insights_history.splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("Same conclusion", lines[0])
+
+    def test_strategy_history_falls_back_to_first_meaningful_line(self):
+        state = WorkspaceState.load_or_create(self.temp_dir.name)
+        state.write_strategy("# Heading\n\n- concise takeaway\n\nMore details")
+
+        self.assertIn("concise takeaway", state.insights_history)

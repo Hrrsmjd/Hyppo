@@ -8,7 +8,28 @@ Point Hyppo at a training codebase, tell it which hyperparameters it is allowed 
 
 ## Install
 
-With `uv` for local development:
+This repository is not installed from PyPI. Most users should either install directly from GitHub or clone the repo locally.
+
+Recommended: install the CLI directly from GitHub with `uv`:
+
+```bash
+uv tool install 'git+https://github.com/Hrrsmjd/Hyppo.git'
+```
+
+Then run:
+
+```bash
+hyppo
+```
+
+If you want to clone the repo locally first:
+
+```bash
+git clone https://github.com/Hrrsmjd/Hyppo.git
+cd Hyppo
+```
+
+With `uv` for local development from a clone:
 
 ```bash
 uv sync --extra dev
@@ -54,12 +75,6 @@ uv pip install -e ".[dev]"
 hyppo
 ```
 
-After publishing to PyPI:
-
-```bash
-pipx install hyppo
-```
-
 ## What Hyppo does
 
 1. Reads your project and generates an LLM-facing description automatically.
@@ -83,12 +98,70 @@ pipx install hyppo
   - OpenAI
   - OpenRouter
 
-If you use the example Modal app in `hyppo/training/modal_app.py`, create the W&B secret and deploy it first:
+## Auth and Keys
+
+Hyppo uses three different auth surfaces:
+
+1. An LLM provider API key for Hyppo itself. This is used locally by the CLI and does not need to be present in Modal.
+2. A Weights & Biases API key both locally and inside Modal.
+3. Local Modal authentication so Hyppo can launch and inspect remote runs.
+
+### LLM provider key
+
+You need one of:
+
+- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
+- `OPENROUTER_API_KEY`
+
+You can provide it in either of these ways:
+
+- Set the environment variable before launching Hyppo.
+- Use `/provider ...` and then `/apikey ...` inside the CLI.
+
+When you use `/apikey`, Hyppo stores the key locally in `~/.hyppo/credentials.json`.
+
+Examples:
+
+```bash
+export ANTHROPIC_API_KEY=...
+```
+
+or inside the CLI:
+
+```text
+/provider anthropic
+/apikey sk-ant-...
+```
+
+### Weights & Biases key
+
+Hyppo reads W&B metrics locally through the W&B API, and your training job logs to W&B inside Modal. That means the W&B key needs to exist in both places:
+
+- Local machine: use `wandb login` or set `WANDB_API_KEY`
+- Modal runtime: create a Modal secret and attach it to your training function
+
+The example training app at `examples/cifar10/modal_app.py` expects a Modal secret named `wandb-secret`. If you want to deploy that example, clone the repo first so you have the example files locally.
+
+Example:
 
 ```bash
 modal secret create wandb-secret WANDB_API_KEY=...
-modal deploy path/to/your/modal_app.py
+modal deploy examples/cifar10/modal_app.py
 ```
+
+### Modal authentication
+
+Hyppo launches Modal functions and polls their status from your local machine, so your local Modal CLI/SDK must already be authenticated before you run `/optimize`.
+
+## First-Time Setup
+
+1. Install Hyppo from GitHub or clone the repo locally.
+2. Make sure your Modal training function is already deployed.
+3. Configure your local LLM key with an environment variable or `/apikey`.
+4. Configure W&B locally with `wandb login` or `WANDB_API_KEY`.
+5. Create the `wandb-secret` Modal secret if your training function needs it.
+6. Launch `hyppo` and point it at your training project.
 
 ## Quick Start
 
@@ -129,6 +202,14 @@ Then configure a campaign:
 /optimize
 ```
 
+If you prefer environment variables, you can launch the CLI like this:
+
+```bash
+export ANTHROPIC_API_KEY=...
+export WANDB_API_KEY=...
+hyppo
+```
+
 ### What those commands mean
 
 - `/project` points to the whole training codebase, not just a single script.
@@ -137,11 +218,15 @@ Then configure a campaign:
 - `/describe` appends your own notes on top of the generated project description.
 - `/max_total_runs` is the total campaign budget.
 - `/max_concurrent_runs` is the parallelism cap.
-- `/max_time` is Hyppo's per-run time budget for reasoning and progress normalization.
+- `/max_time` is Hyppo's per-run time budget. In the bundled CIFAR-10
+  example, Hyppo passes it through as `max_time_minutes`, so the training
+  loop uses it as the effective runtime budget.
 
 Important:
-- `/max_time` does not automatically change your Modal function timeout.
-- The actual hard runtime limit still needs to be configured on your deployed `@app.function(timeout=...)`.
+- The bundled CIFAR-10 example still has a separate higher Modal hard
+  timeout as a safety cap.
+- For your own custom Modal function, `/max_time` only controls real run
+  time if your function accepts and uses `max_time_minutes`.
 
 ## How It Works
 
@@ -257,16 +342,6 @@ Note:
 | OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1` |
 | OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` |
 
-You can set keys with `/apikey` or environment variables. All providers are accessed through the OpenAI SDK.
-
-## Publishing
-
-Build and upload from a clean checkout:
-
-```bash
-python -m build
-python -m twine check dist/*
-python -m twine upload dist/*
-```
+You can set LLM keys with `/apikey` or environment variables. All providers are accessed through the OpenAI SDK.
 
 Package metadata and the `hyppo` console entry point are defined in `pyproject.toml`.

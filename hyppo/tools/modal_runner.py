@@ -4,18 +4,36 @@ from numbers import Real
 from hyppo.state import WorkspaceState, now_iso
 
 
+def _spawn_kwargs(run_name: str, params: dict, config: dict) -> dict:
+    kwargs = {
+        **params,
+        "wandb_project": config["wandb_project"],
+        "wandb_entity": config.get("wandb_entity"),
+        "run_name": run_name,
+    }
+    max_time = config.get("max_time")
+    if isinstance(max_time, Real) and not isinstance(max_time, bool) and max_time > 0:
+        kwargs["max_time_minutes"] = int(max_time)
+    return kwargs
+
+
 def launch_modal_run(run_name: str, params: dict, config: dict) -> dict:
     import modal
 
     app_name = config.get("modal_app_name", "hpo-agent")
     function_name = config.get("modal_function_name", "train_model")
     fn = modal.Function.from_name(app_name, function_name)
-    call = fn.spawn(
-        **params,
-        wandb_project=config["wandb_project"],
-        wandb_entity=config.get("wandb_entity"),
-        run_name=run_name,
-    )
+    kwargs = _spawn_kwargs(run_name, params, config)
+    try:
+        call = fn.spawn(**kwargs)
+    except TypeError as exc:
+        if "max_time_minutes" not in kwargs:
+            raise
+        message = str(exc)
+        if "max_time_minutes" not in message and "unexpected keyword" not in message:
+            raise
+        kwargs.pop("max_time_minutes", None)
+        call = fn.spawn(**kwargs)
     return {"modal_call_id": call.object_id, "status": "running"}
 
 

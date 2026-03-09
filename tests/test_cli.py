@@ -95,6 +95,28 @@ class CliTests(unittest.TestCase):
         self.assertEqual(self.cfg.project_dir, str(self.project_dir))
         self.assertIn("Project directory is not writable", buffer.getvalue())
 
+    def test_project_defers_description_generation_until_optimize(self):
+        self.cfg.llm_description = "old description"
+        buffer = io.StringIO()
+
+        with patch("hyppo.cli._maybe_generate_description") as mock_generate, redirect_stdout(buffer):
+            handle_command(f"/project {self.project_dir}", self.cfg, None)
+
+        self.assertEqual(self.cfg.llm_description, "")
+        self.assertFalse(mock_generate.called)
+        self.assertIn("LLM project description will refresh on /optimize.", buffer.getvalue())
+
+    def test_script_defers_description_generation_until_optimize(self):
+        self.cfg.llm_description = "old description"
+        buffer = io.StringIO()
+
+        with patch("hyppo.cli._maybe_generate_description") as mock_generate, redirect_stdout(buffer):
+            handle_command("/script train.py", self.cfg, None)
+
+        self.assertEqual(self.cfg.llm_description, "")
+        self.assertFalse(mock_generate.called)
+        self.assertIn("LLM project description will refresh on /optimize.", buffer.getvalue())
+
     def test_describe_appends_user_notes(self):
         handle_command("/describe first note", self.cfg, None)
         handle_command("/describe second note", self.cfg, None)
@@ -180,3 +202,103 @@ class CliTests(unittest.TestCase):
         self.assertFalse(keep_running)
         self.assertTrue(session.stop_event.is_set())
         self.assertEqual(session.campaign_thread.join_timeout, 5)
+
+    def test_start_campaign_reloads_manual_config_edits_from_disk(self):
+        session = CliSession(cfg=self.cfg, cwd=str(self.cwd_path))
+        stale_cfg = HyppoConfig()
+        stale_cfg.project_dir = str(self.project_dir)
+        stale_cfg.script = "train.py"
+        stale_cfg.llm_description = "CLI test model"
+        stale_cfg.params = ["learning_rate"]
+        stale_cfg.provider = "anthropic"
+        stale_cfg.model = "claude-sonnet-4-20250514"
+        stale_cfg.wandb_project = "test-project"
+        session.cfg = stale_cfg
+
+        save_project_config(
+            self.project_dir,
+            {
+                "llm_description": "CLI test model",
+                "available_hyperparameters": ["learning_rate", "dropout", "weight_decay"],
+                "wandb_project": "test-project",
+                "training_script": "train.py",
+                "llm_provider": "anthropic",
+                "llm_model": "claude-sonnet-4-20250514",
+                "max_total_runs": 100,
+                "max_concurrent_runs": 4,
+                "max_time": 30,
+                "heartbeat_interval_minutes": 5,
+                "modal_app_name": "hpo-agent",
+                "modal_function_name": "train_model",
+            },
+        )
+
+        captured = {}
+
+        class CampaignThread:
+            def __init__(self, target, args, daemon):
+                captured["target"] = target
+                captured["args"] = args
+                captured["daemon"] = daemon
+                self._alive = False
+
+            def start(self):
+                self._alive = True
+
+            def is_alive(self):
+                return self._alive
+
+        session._thread_factory = CampaignThread
+        session._campaign_runner = lambda cfg, stop_event: None
+
+        with patch.object(HyppoConfig, "validate", return_value=[]):
+            session.start_campaign()
+
+        self.assertEqual(session.cfg.params, ["learning_rate", "dropout", "weight_decay"])
+        self.assertEqual(captured["args"][0].params, ["learning_rate", "dropout", "weight_decay"])
+
+    def test_start_campaign_generates_description_once_when_missing(self):
+        save_project_config(
+            self.project_dir,
+            {
+                "llm_description": "",
+                "available_hyperparameters": ["learning_rate"],
+                "wandb_project": "test-project",
+                "training_script": "train.py",
+                "llm_provider": "anthropic",
+                "llm_model": "claude-sonnet-4-20250514",
+                "max_total_runs": 100,
+                "max_concurrent_runs": 4,
+                "max_time": 30,
+                "heartbeat_interval_minutes": 5,
+                "modal_app_name": "hpo-agent",
+                "modal_function_name": "train_model",
+            },
+        )
+        session = CliSession(cfg=self.cfg, cwd=str(self.cwd_path))
+
+        class CampaignThread:
+            def __init__(self, target, args, daemon):
+                self._alive = False
+
+            def start(self):
+                self._alive = True
+
+            def is_alive(self):
+                return self._alive
+
+        session._thread_factory = CampaignThread
+        session._campaign_runner = lambda cfg, stop_event: None
+
+        def fake_generate(cfg, force=False):
+            cfg.llm_description = "generated description"
+            return True
+
+        with (
+            patch("hyppo.cli._maybe_generate_description", side_effect=fake_generate) as mock_generate,
+            patch.object(HyppoConfig, "validate", return_value=[]),
+        ):
+            session.start_campaign()
+
+        self.assertEqual(mock_generate.call_count, 1)
+        self.assertEqual(session.cfg.llm_description, "generated description")
