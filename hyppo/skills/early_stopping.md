@@ -4,9 +4,8 @@ Kill a run early only when that clearly improves the remaining budget.
 
 ### Kill immediately if:
 
-- Loss has exploded (NaN or very large values)
-- Validation loss is clearly catastrophic relative to the current best
-  after enough progress to trust the signal
+- The primary metric has gone invalid (NaN) or clearly catastrophic
+  relative to the current best after enough progress to trust the signal
 - The run is failing in a way that is unlikely to recover
 
 ### Consider killing if:
@@ -15,15 +14,15 @@ Kill a run early only when that clearly improves the remaining budget.
   and its trend is flat or deteriorating
 - Training loss is dropping but validation loss is rising, suggesting
   strong overfitting
-- Recent validation history shows repeated large oscillations with no
-  net improvement
+- Recent primary-metric history shows repeated large oscillations with
+  no net improvement
 - The run is in a crowded region of the space and provides little new
   information
 
 ### Keep running if:
 
-- Loss is still actively decreasing and the run remains plausible at its
-  current progress
+- The primary metric is still moving in the favorable direction and the
+  run remains plausible at its current progress
 - You're in the fine-tuning phase and need to confirm a result
 - The run is testing a genuinely novel region of the search space
 - The run is behind on wall-clock time but still competitive by

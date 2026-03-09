@@ -18,10 +18,12 @@ from hyppo.project_context import generate_project_description
 
 COMMAND_SPECS = (
     ("Setup commands:", (
-        ("/project", "<path>", "Set project directory and infer an LLM description"),
+        ("/project", "<path>", "Set project directory"),
         ("/script", "<path>", "Set training script path inside the project"),
         ("/describe", "<text>", "Append extra user notes to the project description"),
         ("/params", "<list>", "Set hyperparameters (comma-separated)"),
+        ("/objective", "<minimize|maximize>", "Set optimization direction"),
+        ("/metric", "<name>", "Set the primary metric name"),
         ("/provider", "<name>", "Set LLM provider (anthropic/openai/openrouter)"),
         ("/model", "<name>", "Set LLM model"),
         ("/apikey", "<key>", "Set API key for current provider"),
@@ -87,6 +89,8 @@ def print_config(cfg: HyppoConfig):
         f"""
   Project:             {cfg.project_dir or 'NOT SET'}
   Script:              {cfg.script or 'NOT SET'}
+  Objective:           {cfg.objective}
+  Metric:              {cfg.metric}
   LLM Description:     {_preview(cfg.llm_description)}
   User Description:    {_preview(cfg.user_description)}
   Params:              {', '.join(cfg.params) if cfg.params else 'NOT SET'}
@@ -131,7 +135,8 @@ def print_status(cfg: HyppoConfig):
         return
 
     snapshot = state.status_snapshot()
-    best = snapshot["best_val_loss"]
+    metric_name = snapshot["metric_name"]
+    best = snapshot["best_metric"]
     best_text = f"{best:.4f}" if isinstance(best, (int, float)) else "N/A"
     space_version = snapshot["search_space_version"] or "N/A"
 
@@ -141,7 +146,7 @@ def print_status(cfg: HyppoConfig):
   Completed Runs:        {snapshot["completed_runs"]}
   Total Runs Started:    {snapshot["total_runs_started"]}
   Runs Remaining:        {snapshot["runs_remaining"]}
-  Best val_loss:         {best_text}
+  Best {metric_name}:    {best_text}
   Search Space Version:  {space_version}
 """
     )
@@ -410,6 +415,24 @@ def handle_command(line: str, cfg: HyppoConfig, campaign_stop_event: threading.E
         cfg.params = [p.strip() for p in arg.split(",") if p.strip()]
         config_changed = True
         print(f"Parameters: {', '.join(cfg.params)}")
+
+    elif cmd == "/objective":
+        value = arg.lower()
+        if value not in {"minimize", "maximize"}:
+            print("Usage: /objective <minimize|maximize>")
+            return None
+        cfg.objective = value
+        config_changed = True
+        print(f"Objective: {cfg.objective}")
+
+    elif cmd == "/metric":
+        value = arg.strip()
+        if not value:
+            print("Usage: /metric <name>")
+            return None
+        cfg.metric = value
+        config_changed = True
+        print(f"Metric: {cfg.metric}")
 
     elif cmd == "/provider":
         if arg not in ("anthropic", "openai", "openrouter"):

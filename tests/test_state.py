@@ -71,8 +71,34 @@ class WorkspaceStateTests(unittest.TestCase):
         self.assertEqual(snapshot["completed_runs"], 1)
         self.assertEqual(snapshot["total_runs_started"], 1)
         self.assertEqual(snapshot["runs_remaining"], 4)
-        self.assertEqual(snapshot["best_val_loss"], 0.4)
+        self.assertEqual(snapshot["best_metric"], 0.4)
+        self.assertEqual(snapshot["metric_name"], "val_loss")
         self.assertIsNone(snapshot["search_space_version"])
+
+    def test_status_snapshot_uses_maximize_metric(self):
+        save_project_config(
+            self.temp_dir.name,
+            {
+                "llm_description": "Test model",
+                "available_hyperparameters": ["learning_rate", "dropout"],
+                "wandb_project": "test-project",
+                "max_total_runs": 5,
+                "metric": "accuracy",
+                "objective": "maximize",
+            },
+        )
+        state = WorkspaceState.load_or_create(self.temp_dir.name)
+        state.completed_runs.extend(
+            [
+                {"run_id": "run_001", "best_accuracy": 0.81},
+                {"run_id": "run_002", "best_accuracy": 0.87},
+            ]
+        )
+
+        snapshot = state.status_snapshot()
+
+        self.assertEqual(snapshot["best_metric"], 0.87)
+        self.assertEqual(snapshot["metric_name"], "accuracy")
 
     def test_strategy_history_is_preserved(self):
         state = WorkspaceState.load_or_create(self.temp_dir.name)

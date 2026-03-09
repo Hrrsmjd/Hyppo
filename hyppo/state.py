@@ -11,6 +11,7 @@ from hyppo.config import (
     skills_dir,
     state_dir,
 )
+from hyppo.metrics import get_objective, get_run_best_metric, get_metric_name, is_better
 
 
 def now_iso() -> str:
@@ -197,6 +198,15 @@ class WorkspaceState:
             return f"{entity}/{project}/{run_id}"
         return f"{project}/{run_id}"
 
+    def best_completed_metric(self) -> float | None:
+        best_value = None
+        objective = get_objective(self.config)
+        for run in self.completed_runs:
+            candidate = get_run_best_metric(run, self.config)
+            if is_better(candidate, best_value, objective):
+                best_value = candidate
+        return best_value
+
     def best_completed_val_loss(self) -> float | None:
         losses = [
             run["best_val_loss"]
@@ -219,7 +229,8 @@ class WorkspaceState:
             "completed_runs": len(self.completed_runs),
             "total_runs_started": self.total_runs_started(),
             "runs_remaining": self.runs_remaining(),
-            "best_val_loss": self.best_completed_val_loss(),
+            "best_metric": self.best_completed_metric(),
+            "metric_name": get_metric_name(self.config),
             "search_space_version": (
                 self.search_space.get("version") if self.search_space_exists() else None
             ),

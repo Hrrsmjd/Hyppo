@@ -1,6 +1,12 @@
 import json
 from pathlib import Path
 
+from hyppo.metrics import (
+    get_metric_name,
+    get_run_best_metric,
+    get_run_best_time_seconds,
+    get_run_latest_metric,
+)
 from hyppo.state import WorkspaceState
 
 MAX_DESCRIPTION_CHARS = 3000
@@ -40,24 +46,44 @@ def _truncate_text(text: str, limit: int) -> str:
     return text[:limit].rstrip() + "\n\n[Truncated to keep prompt size bounded.]"
 
 
-def _format_history(history: list[dict], max_points: int | None = None) -> str:
+def _history_columns(history: list[dict], metric_name: str) -> list[str]:
+    columns = ["time_seconds", "progress_percent", "metric"]
+    if any(point.get("train_loss") is not None for point in history):
+        columns.append("train_loss")
+    if metric_name != "val_loss" and any(point.get("val_loss") is not None for point in history):
+        columns.append("val_loss")
+    if metric_name != "accuracy" and any(point.get("accuracy") is not None for point in history):
+        columns.append("accuracy")
+    return columns
+
+
+def _column_label(column: str, metric_name: str) -> str:
+    labels = {
+        "time_seconds": "time_s",
+        "progress_percent": "progress_%",
+        "metric": metric_name,
+        "train_loss": "train_loss",
+        "val_loss": "val_loss",
+        "accuracy": "accuracy",
+    }
+    return labels[column]
+
+
+def _format_history(history: list[dict], metric_name: str, max_points: int | None = None) -> str:
     if not history:
         return "No metric history yet."
 
     displayed = history[-max_points:] if max_points else history
-    lines = [
-        "| time_s | progress_% | val_loss | train_loss |",
-        "| ---: | ---: | ---: | ---: |",
-    ]
+    columns = _history_columns(displayed, metric_name)
+    header = "| " + " | ".join(_column_label(column, metric_name) for column in columns) + " |"
+    divider = "| " + " | ".join("---:" for _ in columns) + " |"
+    lines = [header, divider]
     for point in displayed:
-        lines.append(
-            "| {time_seconds} | {progress_percent} | {val_loss} | {train_loss} |".format(
-                time_seconds=_format_metric(point.get("time_seconds"), digits=1),
-                progress_percent=_format_metric(point.get("progress_percent"), digits=1),
-                val_loss=_format_metric(point.get("val_loss")),
-                train_loss=_format_metric(point.get("train_loss")),
-            )
-        )
+        row = []
+        for column in columns:
+            digits = 1 if column in {"time_seconds", "progress_percent"} else 4
+            row.append(_format_metric(point.get(column), digits=digits))
+        lines.append("| " + " | ".join(row) + " |")
     if max_points and len(history) > len(displayed):
         lines.append(
             f"\nShowing the most recent {len(displayed)} of {len(history)} history points."
@@ -69,26 +95,29 @@ def _format_runs(
     runs: list[dict],
     title: str,
     include_history: bool,
+    config: dict,
     history_points: int | None = None,
 ) -> str:
     if not runs:
         return f"## {title}\nNo runs."
 
+    metric_name = get_metric_name(config)
     lines = [
         f"## {title}",
-        "| run_id | status | elapsed_s | progress_% | best_val_loss | best_time_s | trend | params |",
-        "| --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
+        f"| run_id | status | elapsed_s | progress_% | best_{metric_name} | latest_{metric_name} | best_time_s | trend | params |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     for run in runs:
         lines.append(
             "| {run_id} | {status} | {elapsed_time_seconds} | {progress_percent} | "
-            "{best_val_loss} | {best_time_seconds} | {trend} | {params} |".format(
+            "{best_metric} | {latest_metric} | {best_time_seconds} | {trend} | {params} |".format(
                 run_id=run.get("run_id", "-"),
                 status=run.get("status", "running"),
                 elapsed_time_seconds=_format_metric(run.get("elapsed_time_seconds"), digits=1),
                 progress_percent=_format_metric(run.get("progress_percent"), digits=1),
-                best_val_loss=_format_metric(run.get("best_val_loss")),
-                best_time_seconds=_format_metric(run.get("best_time_seconds"), digits=1),
+                best_metric=_format_metric(get_run_best_metric(run, config)),
+                latest_metric=_format_metric(get_run_latest_metric(run, config)),
+                best_time_seconds=_format_metric(get_run_best_time_seconds(run, config), digits=1),
                 trend=run.get("trend", "-"),
                 params=_format_params(run.get("params", {})),
             )
@@ -96,7 +125,13 @@ def _format_runs(
         if include_history:
             lines.append("")
             lines.append(f"### {run.get('run_id', '-') } Metric History")
-            lines.append(_format_history(run.get("metric_history", []), max_points=history_points))
+            lines.append(
+                _format_history(
+                    run.get("metric_history", []),
+                    metric_name=metric_name,
+                    max_points=history_points,
+                )
+            )
             lines.append("")
     return "\n".join(lines).strip()
 
@@ -167,6 +202,7 @@ def format_state_for_prompt(state: WorkspaceState) -> str:
             state.active_runs,
             "Active Runs",
             include_history=True,
+            config=state.config,
             history_points=MAX_ACTIVE_HISTORY_POINTS,
         )
     )
@@ -177,8 +213,9 @@ def format_state_for_prompt(state: WorkspaceState) -> str:
         if older:
             summary = [
                 (
-                    f"- {run.get('run_id', '?')}: best_val_loss={_format_metric(run.get('best_val_loss'))}, "
-                    f"best_time_s={_format_metric(run.get('best_time_seconds'), digits=1)}"
+                    f"- {run.get('run_id', '?')}: best_{get_metric_name(state.config)}="
+                    f"{_format_metric(get_run_best_metric(run, state.config))}, "
+                    f"best_time_s={_format_metric(get_run_best_time_seconds(run, state.config), digits=1)}"
                 )
                 for run in older[-MAX_OLDER_COMPLETED_SUMMARY:]
             ]
@@ -187,7 +224,9 @@ def format_state_for_prompt(state: WorkspaceState) -> str:
                 f"Summarized to keep prompt size bounded ({len(older)} runs, showing the most recent {min(len(older), MAX_OLDER_COMPLETED_SUMMARY)}).\n"
                 + "\n".join(summary)
             )
-        sections.append(_format_runs(recent, "Recent Completed Runs", include_history=False))
+        sections.append(
+            _format_runs(recent, "Recent Completed Runs", include_history=False, config=state.config)
+        )
     else:
         sections.append("## Completed Runs\nNo completed runs yet.")
 

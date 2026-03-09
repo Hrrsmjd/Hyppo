@@ -3,26 +3,31 @@
 Each heartbeat includes run summaries plus metric history for active and
 recent completed runs. The most important fields are:
 
-- `best_val_loss`
-- `latest_val_loss`
+- `best_<metric>`
+- `latest_<metric>`
 - `latest_train_loss`
 - `elapsed_time_seconds`
 - `progress_percent`
 - `trend`
 
-Use them comparatively, not in isolation. Prefer comparing runs at
-similar progress percentages rather than raw wall-clock time.
+The primary metric and direction come from the config:
+- if the objective is `minimize`, lower primary-metric values are better
+- if the objective is `maximize`, higher primary-metric values are better
 
-- **Steady decrease in train and validation loss**: healthy training;
-  usually keep running
-- **Validation improving but slowly**: often still worth keeping if the
-  run is competitive at similar progress
-- **Train loss down, val loss flat or rising**: likely overfitting;
-  regularization or augmentation may need to change
-- **Oscillation with weak net improvement**: learning rate may be too
-  high or batch size too small
-- **Very poor best_val_loss after substantial progress**: likely not
-  worth more budget
+Use the primary metric comparatively, not in isolation. Prefer
+comparing runs at similar progress percentages rather than raw
+wall-clock time.
+
+- **Primary metric improving steadily**: healthy training; usually keep
+  running
+- **Primary metric improving but slowly**: often still worth keeping if
+  the run is competitive at similar progress
+- **Train loss down, validation loss flat or rising**: likely
+  overfitting; regularization or augmentation may need to change
+- **Oscillation with weak net improvement in the primary metric**:
+  learning rate may be too high or batch size too small
+- **Very poor best primary metric after substantial progress**: likely
+  not worth more budget
 - **Best run sits near the edge of a range**: consider expanding that
   dimension in the search space
 

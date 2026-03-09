@@ -124,6 +124,8 @@ class HyppoConfig:
     def __init__(self):
         self.project_dir: str | None = None
         self.script: str | None = None
+        self.objective: str = "minimize"
+        self.metric: str = "val_loss"
         self.llm_description: str = ""
         self.user_description: str = ""
         self.params: list[str] = []
@@ -149,8 +151,8 @@ class HyppoConfig:
 
     def to_dict(self) -> dict:
         return {
-            "objective": "minimize",
-            "metric": "val_loss",
+            "objective": self.objective,
+            "metric": self.metric,
             "project_path": self.project_dir or "",
             "training_script": self.script or "",
             "llm_description": self.llm_description,
@@ -178,6 +180,8 @@ class HyppoConfig:
         data = load_project_config(project_dir)
         cfg = cls()
         cfg.project_dir = str(Path(project_dir).resolve())
+        cfg.objective = data.get("objective", "minimize")
+        cfg.metric = data.get("metric", "val_loss")
         cfg.llm_description = data.get("llm_description", data.get("model_description", ""))
         cfg.user_description = data.get("user_description", "")
         cfg.script = data.get("training_script", "") or None
@@ -199,7 +203,7 @@ class HyppoConfig:
             return None
 
         project_root = Path(self.project_dir)
-        for name in ["train.py", "training.py", "main.py"]:
+        for name in ["train.py", "training.py", "main.py", "modal_app.py", "app.py"]:
             if (project_root / name).exists():
                 return name
 
@@ -208,6 +212,12 @@ class HyppoConfig:
             for f in sorted(training_dir.iterdir()):
                 if f.suffix == ".py" and f.name != "__init__.py":
                     return f"training/{f.name}"
+
+        examples_dir = project_root / "examples"
+        if examples_dir.is_dir():
+            for f in sorted(examples_dir.rglob("*.py")):
+                if f.name != "__init__.py":
+                    return f.relative_to(project_root).as_posix()
 
         return None
 
@@ -236,9 +246,14 @@ class HyppoConfig:
 
         if not self.description:
             errors.append(
-                "No project description is available. Re-run /project after configuring the "
+                "No project description is available. Run /optimize after configuring the "
                 "LLM or add notes with /describe."
             )
+
+        if self.objective not in {"minimize", "maximize"}:
+            errors.append("Objective must be either 'minimize' or 'maximize'")
+        if not self.metric:
+            errors.append("Metric must be a non-empty string")
 
         if self.heartbeat_minutes <= 0:
             errors.append("Heartbeat interval must be a positive integer")

@@ -124,6 +124,13 @@ class CliTests(unittest.TestCase):
         self.assertIn("first note", self.cfg.user_description)
         self.assertIn("second note", self.cfg.user_description)
 
+    def test_metric_and_objective_commands_update_config(self):
+        handle_command("/metric accuracy", self.cfg, None)
+        handle_command("/objective maximize", self.cfg, None)
+
+        self.assertEqual(self.cfg.metric, "accuracy")
+        self.assertEqual(self.cfg.objective, "maximize")
+
     def test_command_completion_matches_slash_prefix(self):
         candidates = get_completion_candidates("/pa", self.cfg, cwd=str(self.cwd_path))
 
@@ -208,6 +215,8 @@ class CliTests(unittest.TestCase):
         stale_cfg = HyppoConfig()
         stale_cfg.project_dir = str(self.project_dir)
         stale_cfg.script = "train.py"
+        stale_cfg.metric = "val_loss"
+        stale_cfg.objective = "minimize"
         stale_cfg.llm_description = "CLI test model"
         stale_cfg.params = ["learning_rate"]
         stale_cfg.provider = "anthropic"
@@ -222,6 +231,8 @@ class CliTests(unittest.TestCase):
                 "available_hyperparameters": ["learning_rate", "dropout", "weight_decay"],
                 "wandb_project": "test-project",
                 "training_script": "train.py",
+                "metric": "accuracy",
+                "objective": "maximize",
                 "llm_provider": "anthropic",
                 "llm_model": "claude-sonnet-4-20250514",
                 "max_total_runs": 100,
@@ -255,6 +266,8 @@ class CliTests(unittest.TestCase):
             session.start_campaign()
 
         self.assertEqual(session.cfg.params, ["learning_rate", "dropout", "weight_decay"])
+        self.assertEqual(session.cfg.metric, "accuracy")
+        self.assertEqual(session.cfg.objective, "maximize")
         self.assertEqual(captured["args"][0].params, ["learning_rate", "dropout", "weight_decay"])
 
     def test_start_campaign_generates_description_once_when_missing(self):

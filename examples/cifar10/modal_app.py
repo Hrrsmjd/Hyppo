@@ -513,15 +513,8 @@ def train_model(
                 "train_loss": avg_train_loss,
                 "val_loss": avg_val_loss,
                 "accuracy": accuracy,
-                "best_val_loss": best_val_loss,
-                "best_accuracy": best_accuracy,
-                "best_accuracy_time_seconds": best_accuracy_time_seconds,
-                "best_accuracy_progress_percent": best_accuracy_progress_percent,
-                "best_val_loss_at_best_accuracy": best_val_loss_at_best_accuracy,
-                "learning_rate": current_lr,
                 "elapsed_time_seconds": elapsed_time_seconds,
                 "progress_percent": progress_percent,
-                "parameter_count": parameter_count,
             }
         )
 

@@ -3,6 +3,14 @@ import time
 
 from hyppo.llm_client import LLMClient
 from hyppo.logger import MarkdownLogger
+from hyppo.metrics import (
+    get_metric_name,
+    get_objective,
+    get_run_best_metric,
+    get_run_best_progress_percent,
+    get_run_best_time_seconds,
+    get_run_latest_metric,
+)
 from hyppo.prompt_builder import build_prompt
 from hyppo.state import WorkspaceState, now_iso
 from hyppo.tools.definitions import TOOL_DEFINITIONS
@@ -23,24 +31,41 @@ def _hydrate_metrics(run: dict, metrics: dict) -> None:
         run.update(metrics)
         return
 
-    if run.get("final_val_loss") is not None:
+    metric_name = metrics.get("metric_name", "val_loss")
+    fallback_metric = get_run_latest_metric(run, {"metric": metric_name}) or get_run_best_metric(
+        run, {"metric": metric_name}
+    )
+    if fallback_metric is not None:
         fallback_point = {
-            "time_seconds": run.get("best_time_seconds") or run.get("elapsed_time_seconds"),
-            "progress_percent": run.get("best_progress_percent") or run.get("progress_percent"),
-            "val_loss": run.get("final_val_loss"),
+            "time_seconds": get_run_best_time_seconds(run, {"metric": metric_name})
+            or run.get("elapsed_time_seconds"),
+            "progress_percent": get_run_best_progress_percent(run, {"metric": metric_name})
+            or run.get("progress_percent"),
+            "metric": fallback_metric,
             "train_loss": run.get("latest_train_loss"),
         }
+        if run.get("final_val_loss") is not None:
+            fallback_point["val_loss"] = run.get("final_val_loss")
+        if run.get("final_accuracy") is not None:
+            fallback_point["accuracy"] = run.get("final_accuracy")
         run.update(
             {
+                "metric_name": metric_name,
+                "objective": metrics.get("objective", "minimize"),
                 "metric_history": [fallback_point],
                 "history_points": 1,
+                "best_metric": get_run_best_metric(run, {"metric": metric_name}) or fallback_metric,
                 "best_val_loss": run.get("best_val_loss") or run.get("final_val_loss"),
-                "best_time_seconds": run.get("best_time_seconds"),
-                "best_progress_percent": run.get("best_progress_percent"),
+                "best_accuracy": run.get("best_accuracy"),
+                "best_time_seconds": get_run_best_time_seconds(run, {"metric": metric_name}),
+                "best_progress_percent": get_run_best_progress_percent(run, {"metric": metric_name}),
+                "latest_metric": get_run_latest_metric(run, {"metric": metric_name}) or fallback_metric,
                 "latest_val_loss": run.get("latest_val_loss") or run.get("final_val_loss"),
+                "latest_accuracy": run.get("latest_accuracy") or run.get("final_accuracy"),
                 "latest_train_loss": run.get("latest_train_loss"),
                 "elapsed_time_seconds": run.get("elapsed_time_seconds"),
-                "progress_percent": run.get("progress_percent") or run.get("best_progress_percent"),
+                "progress_percent": run.get("progress_percent")
+                or get_run_best_progress_percent(run, {"metric": metric_name}),
                 "trend": run.get("trend", "insufficient_data"),
             }
         )
@@ -54,6 +79,8 @@ def _safe_fetch_run_metrics(state: WorkspaceState, run: dict, source: str) -> No
     try:
         metrics = fetch_run_metrics(
             state.wandb_run_path(run["run_id"]),
+            metric_name=get_metric_name(state.config),
+            objective=get_objective(state.config),
             max_time=state.config.get("max_time"),
         )
         _hydrate_metrics(run, metrics)
@@ -70,8 +97,12 @@ def _needs_metric_backfill(run: dict) -> bool:
     return not has_metric_signal(
         {
             "metric_history": run.get("metric_history"),
+            "best_metric": run.get("best_metric"),
             "best_val_loss": run.get("best_val_loss"),
+            "best_accuracy": run.get("best_accuracy"),
+            "latest_metric": run.get("latest_metric"),
             "latest_val_loss": run.get("latest_val_loss"),
+            "latest_accuracy": run.get("latest_accuracy"),
             "latest_train_loss": run.get("latest_train_loss"),
             "elapsed_time_seconds": run.get("elapsed_time_seconds"),
             "progress_percent": run.get("progress_percent"),
